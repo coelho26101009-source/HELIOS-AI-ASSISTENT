@@ -13,9 +13,4 @@ Um assistente virtual avançado inspirado no J.A.R.V.I.S., desenvolvido em Pytho
 * **Placa Gráfica:** NVIDIA GTX 1660 Ti (6GB VRAM) ou superior
 * **RAM:** 16GB+
 
-## 🛠️ Como Instalar (Para Desenvolvedores)
 
-1. **Clonar o repositório:**
-   ```bash
-   git clone [https://github.com/TEU_USER/HELIOS.git](https://github.com/TEU_USER/HELIOS.git)
-   cd HELIOS
