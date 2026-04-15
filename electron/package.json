@@ -1,0 +1,68 @@
+{
+  "name": "helios-v7",
+  "version": "7.0.0",
+  "description": "H.E.L.I.O.S. — High-Efficiency Local Intelligence & Operating System",
+  "main": "main.js",
+  "author": "Simão Coelho",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win --x64",
+    "build:installer": "electron-builder --win nsis --x64"
+  },
+  "build": {
+    "appId": "com.helios.assistant",
+    "productName": "HELIOS",
+    "copyright": "© 2026 Simão Coelho",
+    "directories": {
+      "output": "../dist-electron"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "assets/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../",
+        "to": "app",
+        "filter": [
+          "core/**",
+          "plugins/**",
+          "config/**",
+          "data/**",
+          "frontend/out/**",
+          ".env",
+          "requirements.txt"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "requestedExecutionLevel": "asUser"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeader": "assets/installer-header.bmp",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "HELIOS"
+    }
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^24.0.0"
+  },
+  "dependencies": {
+    "node-pty": "^1.0.0"
+  }
+}

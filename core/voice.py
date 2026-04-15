@@ -1,0 +1,289 @@
+"""
+H.E.L.I.O.S. Voice Engine v3 — Vozes Humanas
+Prioridade:
+  1. ElevenLabs  (melhor qualidade, grátis 10k chars/mês)
+  2. OpenAI TTS  (onyx/nova, muito natural, ~$0.015/1k chars)
+  3. edge-tts    (gratuito, offline, Microsoft Neural)
+"""
+
+import asyncio
+import io
+import logging
+import os
+import re
+import tempfile
+import wave
+from pathlib import Path
+
+logger = logging.getLogger("helios.voice")
+
+
+class VoiceEngine:
+    def __init__(self, config: dict):
+        self.config        = config
+        self.tts_enabled   = config.get("tts_enabled", True)
+        self.tts_provider  = config.get("tts_provider", "auto")   # auto | elevenlabs | openai | edge
+        self.edge_voice    = config.get("edge_voice", "pt-PT-DuarteNeural")
+        self.edge_rate     = config.get("edge_rate", "-5%")
+        self._mixer_init   = False
+        self._stop_flag    = False
+
+    # ─── FALAR ────────────────────────────────────────────────────────────────
+
+    async def speak(self, text: str):
+        if not self.tts_enabled or not text.strip():
+            return
+
+        self._stop_flag = False
+        clean = _clean_for_tts(text)
+        if not clean:
+            return
+
+        logger.info(f"TTS ({self.tts_provider}): '{clean[:60]}...'")
+
+        provider = self._choose_provider()
+        try:
+            if provider == "elevenlabs":
+                await self._speak_elevenlabs(clean)
+            elif provider == "openai":
+                await self._speak_openai(clean)
+            else:
+                await self._speak_edge(clean)
+        except Exception as e:
+            logger.error(f"TTS falhou ({provider}): {e}")
+            # Fallback automático
+            if provider != "edge":
+                logger.info("A tentar fallback edge-tts...")
+                try:
+                    await self._speak_edge(clean)
+                except Exception as e2:
+                    logger.error(f"Fallback edge também falhou: {e2}")
+
+    def stop(self):
+        self._stop_flag = True
+        try:
+            import pygame
+            if pygame.mixer.get_init():
+                pygame.mixer.music.stop()
+        except Exception:
+            pass
+
+    def _choose_provider(self) -> str:
+        if self.tts_provider != "auto":
+            return self.tts_provider
+        # Auto-deteta qual está disponível
+        if os.getenv("ELEVENLABS_API_KEY"):
+            return "elevenlabs"
+        if os.getenv("OPENAI_API_KEY"):
+            return "openai"
+        return "edge"
+
+    # ─── ELEVENLABS ───────────────────────────────────────────────────────────
+
+    async def _speak_elevenlabs(self, text: str):
+        """
+        ElevenLabs — melhor qualidade, indistinguível de humano.
+        Grátis: 10.000 chars/mês em elevenlabs.io
+        """
+        import httpx
+
+        api_key  = os.getenv("ELEVENLABS_API_KEY", "")
+        # Lê voice_id do .env primeiro, depois do settings.yaml
+        voice_id = os.getenv("ELEVENLABS_VOICE_ID") or self.config.get("elevenlabs_voice_id", "pNInz6obpgDQGcFmaJgB")
+        # Vozes recomendadas para PT:
+        # pNInz6obpgDQGcFmaJgB — Adam (masculina, muito natural)
+        # EXAVITQu4vr4xnSDxMaL — Bella (feminina, suave)
+        # VR6AewLTigWG4xSOukaG — Arnold (masculina, profunda)
+        # 21m00Tcm4TlvDq8ikWAM — Rachel (feminina, clara)
+
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+        headers = {
+            "xi-api-key": api_key,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "text": text,
+            "model_id": "eleven_multilingual_v2",  # Suporta PT nativo
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.8,
+                "style": 0.3,
+                "use_speaker_boost": True,
+            }
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            audio_bytes = resp.content
+
+        await asyncio.get_event_loop().run_in_executor(
+            None, self._play_bytes_mp3, audio_bytes
+        )
+
+    # ─── OPENAI TTS ───────────────────────────────────────────────────────────
+
+    async def _speak_openai(self, text: str):
+        """
+        OpenAI TTS — vozes onyx/nova muito naturais.
+        Custo: ~$0.015 por 1000 chars (muito barato)
+        """
+        import httpx
+
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        voice   = self.config.get("openai_voice", "onyx")
+        # Vozes: onyx (masculina profunda), nova (feminina), echo (masculina)
+        # alloy (neutra), fable (britânica), shimmer (feminina suave)
+
+        url = "https://api.openai.com/v1/audio/speech"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "tts-1-hd",  # Alta qualidade
+            "input": text,
+            "voice": voice,
+            "speed": self.config.get("openai_speed", 1.0),
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            audio_bytes = resp.content
+
+        await asyncio.get_event_loop().run_in_executor(
+            None, self._play_bytes_mp3, audio_bytes
+        )
+
+    # ─── EDGE-TTS (fallback) ──────────────────────────────────────────────────
+
+    async def _speak_edge(self, text: str):
+        """Microsoft Neural TTS — gratuito, sem limites."""
+        import edge_tts
+
+        communicate = edge_tts.Communicate(
+            text,
+            self.edge_voice,
+            rate=self.edge_rate,
+            volume=self.config.get("edge_volume", "+0%"),
+        )
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+            tmp_path = tmp.name
+
+        try:
+            await communicate.save(tmp_path)
+            await asyncio.get_event_loop().run_in_executor(
+                None, self._play_file, tmp_path
+            )
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+    # ─── REPRODUÇÃO ───────────────────────────────────────────────────────────
+
+    def _play_bytes_mp3(self, audio_bytes: bytes):
+        """Reproduz bytes MP3 com pygame."""
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+        try:
+            self._play_file(tmp_path)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+    def _play_file(self, path: str):
+        """Reproduz ficheiro de áudio com pygame."""
+        try:
+            import pygame
+            import time
+
+            if not self._mixer_init:
+                pygame.mixer.pre_init(frequency=44100, size=-16, channels=2, buffer=1024)
+                pygame.mixer.init()
+                self._mixer_init = True
+
+            pygame.mixer.music.load(path)
+            pygame.mixer.music.play()
+
+            while pygame.mixer.music.get_busy():
+                if self._stop_flag:
+                    pygame.mixer.music.stop()
+                    break
+                time.sleep(0.05)
+
+            pygame.mixer.music.unload()
+        except Exception as e:
+            logger.error(f"Erro ao reproduzir: {e}")
+
+    # ─── STT ──────────────────────────────────────────────────────────────────
+
+    async def listen(self, duration_seconds: int = 7) -> str | None:
+        try:
+            audio = await asyncio.get_event_loop().run_in_executor(
+                None, self._record_audio, duration_seconds
+            )
+            if audio:
+                return await asyncio.get_event_loop().run_in_executor(
+                    None, self._transcribe, audio
+                )
+        except Exception as e:
+            logger.error(f"STT erro: {e}")
+        return None
+
+    def _record_audio(self, duration: int) -> bytes | None:
+        try:
+            import pyaudio
+            CHUNK, FORMAT, CHANNELS, RATE = 1024, pyaudio.paInt16, 1, 16000
+            p = pyaudio.PyAudio()
+            stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE,
+                            input=True, frames_per_buffer=CHUNK)
+            frames = [stream.read(CHUNK) for _ in range(int(RATE / CHUNK * duration))]
+            stream.stop_stream(); stream.close(); p.terminate()
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(CHANNELS)
+                wf.setsampwidth(p.get_sample_size(FORMAT))
+                wf.setframerate(RATE)
+                wf.writeframes(b"".join(frames))
+            return buf.getvalue()
+        except Exception as e:
+            logger.error(f"Erro a gravar: {e}")
+            return None
+
+    def _transcribe(self, audio_bytes: bytes) -> str | None:
+        try:
+            import speech_recognition as sr
+            r = sr.Recognizer()
+            with sr.AudioFile(io.BytesIO(audio_bytes)) as src:
+                audio = r.record(src)
+            text = r.recognize_google(audio, language="pt-PT")
+            logger.info(f"STT: '{text}'")
+            return text
+        except Exception as e:
+            logger.warning(f"STT falhou: {e}")
+            return None
+
+
+# ─── Limpeza de texto ─────────────────────────────────────────────────────────
+
+def _clean_for_tts(text: str) -> str:
+    text = re.sub(r'```[\s\S]*?```', 'bloco de código.', text)
+    text = re.sub(r'`[^`]+`', '', text)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    text = re.sub(r'https?://\S+', '', text)
+    text = re.sub(r'[^\w\s\.,!?;:\-áéíóúàâêôãõüçÁÉÍÓÚÀÂÊÔÃÕÜÇ]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    # Limita a 500 chars para TTS (evita custos excessivos e demoras)
+    if len(text) > 500:
+        # Corta na última frase completa
+        sentences = text[:500].rsplit('.', 1)
+        text = sentences[0] + '.' if len(sentences) > 1 else text[:500]
+    return text

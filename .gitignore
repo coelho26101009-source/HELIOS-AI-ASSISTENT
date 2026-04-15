@@ -1,0 +1,36 @@
+# Chaves API e Segredos (NUNCA enviar para o GitHub)
+.env
+.env.local
+
+# Ficheiros e Pastas de Sistema do Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Ambientes Virtuais (Onde instalas as bibliotecas)
+venv/
+.venv/
+env/
+
+# Ficheiros de Base de Dados e Memória (Para não enviar os teus dados pessoais)
+*.db
+*.sqlite3
+chroma_db/
+data/
+memoria/
+
+# Logs de erros do J.A.R.V.I.S.
+*.log
+
+# Ficheiros do SO
+.DS_Store
+Thumbs.db
+
+# Ficheiros gigantes de Javascript e Frontend
+node_modules/
+dist/
+out/
+.next/
+build/

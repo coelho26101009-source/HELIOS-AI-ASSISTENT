@@ -1,0 +1,250 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  H.E.L.I.O.S. V7 — GUIA COMPLETO DE FUNÇÕES
+#  High-Efficiency Local Intelligence & Operating System
+# ══════════════════════════════════════════════════════════════════════════════
+
+## COMO INICIAR
+  Duplo clique em: start.bat
+  Ou no terminal:  cd HELIOS_V7 && .\start.bat
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  💬 CONVERSA NORMAL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Podes falar com o HELIOS como um amigo. Exemplos:
+  • "Olá, como estás?"
+  • "Explica-me o que é machine learning"
+  • "Faz um resumo sobre inteligência artificial"
+  • "Ajuda-me a escrever um email profissional"
+  • "Traduz este texto para inglês: [texto]"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🌐 PESQUISA WEB  (plugin: web_vision)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  web_search — Pesquisa no DuckDuckGo
+    "Pesquisa as últimas notícias sobre IA"
+    "Procura o preço atual do Bitcoin"
+    "Pesquisa tutoriais de Python para iniciantes"
+
+  web_navigate_extract — Abre uma página e extrai o conteúdo
+    "Vai ao site fnac.pt e diz-me o que há em destaque"
+    "Abre https://github.com e resume o que vês"
+
+  web_extract_prices — Extrai preços de produtos de sites
+    "Vai ao amazon.es e diz-me o preço do RTX 4070"
+    "Extrai os preços de portáteis no fnac.pt"
+
+  web_interact — Interage com elementos de páginas web
+    "Clica no botão de pesquisa do google.com"
+    ⚠️  PEDE CONFIRMAÇÃO se for submeter formulários
+
+  web_screenshot — Tira screenshot de uma página web
+    "Tira um screenshot da página inicial do google.com"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🖥️  CONTROLO DO PC  (plugin: god_mode)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  system_run_powershell — Executa comandos PowerShell
+    "Cria uma pasta chamada Projetos no Desktop"
+    "Lista todos os ficheiros da minha pasta Downloads"
+    "Mostra os processos que estão a usar mais RAM"
+    "Qual é o meu endereço IP?"
+    "Descomprime o ficheiro arquivo.zip no Desktop"
+    ⚠️  PEDE CONFIRMAÇÃO para comandos perigosos (apagar, formatar, etc.)
+
+  system_volume — Controla o volume do sistema (0-100)
+    "Mete o volume a 50%"
+    "Aumenta o volume para 80"
+    "Coloca o som em mudo (volume 0)"
+
+  system_brightness — Controla o brilho do ecrã (0-100)
+    "Mete o brilho a 70%"
+    "Reduz o brilho para 30"
+
+  system_bluetooth — Liga/desliga Bluetooth
+    "Liga o Bluetooth"
+    "Desliga o Bluetooth"
+
+  system_wifi — Gere redes Wi-Fi
+    "Que redes Wi-Fi tenho disponíveis?"
+    "Liga ao Wi-Fi Casa"
+    "Desliga o Wi-Fi"
+    "Qual o estado da minha ligação Wi-Fi?"
+
+  system_files — Operações de ficheiros
+    "Lê o conteúdo do ficheiro notas.txt no Desktop"
+    "Lista o que está na pasta Downloads"
+    "Cria um ficheiro chamado lista.txt com o conteúdo [...]"
+    "Copia o ficheiro foto.jpg para a pasta Documentos"
+    ⚠️  PEDE CONFIRMAÇÃO para mover ou apagar ficheiros
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🗂️  ORGANIZAÇÃO DO PC  (plugin: ghost_organizer)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  system_stats — Estatísticas do sistema em tempo real
+    "Como está o meu PC? CPU, RAM e disco"
+    "Que processos estão a usar mais memória?"
+    "Mostra-me as estatísticas do sistema"
+
+  organize_downloads — Organiza a pasta Downloads por tipo
+    "Organiza a minha pasta Downloads"
+    "Arruma os ficheiros dos Downloads por categorias"
+    → Cria subpastas: Imagens, Documentos, Vídeos, Música, etc.
+    ⚠️  PEDE CONFIRMAÇÃO antes de mover ficheiros
+
+  clean_windows_cache — Limpa cache e ficheiros temporários
+    "Limpa os ficheiros temporários do Windows"
+    "Liberta espaço no disco — apaga a cache"
+    → Limpa: %TEMP%, prefetch, cache do browser
+    ⚠️  PEDE CONFIRMAÇÃO antes de apagar
+
+  rename_file_smart — Renomeia ficheiros com sugestões da IA
+    "Renomeia os ficheiros da pasta Fotos com nomes descritivos"
+    "Dá nomes melhores aos ficheiros em C:\Downloads\imagens"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🔄 MODOS DE TRABALHO  (plugin: context_switcher)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  context_activate_mode — Ativa um modo de trabalho
+    "Ativa o modo hacker"     → Abre VS Code + Terminal, fecha distrações
+    "Ativa o modo foco"       → Fecha apps desnecessárias, silencia notificações
+    "Ativa o modo relax"      → Abre Spotify, reduz brilho, volume suave
+
+  context_list_modes — Lista os modos disponíveis
+    "Que modos de trabalho tens?"
+    "Lista os perfis disponíveis"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  📚 MEMÓRIA & DOCUMENTOS  (plugin: smart_life)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  rag_index_pdf — Indexa um PDF para pesquisa inteligente
+    "Indexa o PDF C:\Docs\contrato.pdf"
+    "Adiciona o ficheiro manual.pdf à tua memória"
+
+  rag_search — Pesquisa semântica nos documentos indexados
+    "O que diz o meu contrato sobre rescisão?"
+    "Que informação tens sobre o projeto X no manual?"
+
+  rag_list_docs — Lista documentos indexados
+    "Que documentos tens na memória?"
+    "Lista os PDFs que indexaste"
+
+  phone_notify — Envia notificação para o telemóvel
+    "Envia uma notificação para o meu telemóvel: reunião às 15h"
+    (Requer configuração de webhook em settings.yaml)
+
+  iot_command — Controla dispositivos IoT/Smart Home
+    "Liga as luzes da sala"
+    "Desliga o ar condicionado"
+    (Requer configuração de webhook em settings.yaml)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ⚠️  AÇÕES QUE PEDEM CONFIRMAÇÃO (guardrails)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  O HELIOS pede SEMPRE confirmação antes de:
+
+  🔴 PERIGO ALTO (sempre pede):
+    • Apagar ficheiros permanentemente
+    • Formatar drives
+    • Escrever no registo do Windows
+    • Matar processos do sistema
+
+  🟡 PERIGO MÉDIO (pede se o conteúdo for sensível):
+    • Comandos PowerShell com: Remove-Item, Format, del, rd,
+      rmdir, Stop-Process, shutdown, Restart-Computer, Clear-Disk
+    • Submeter formulários web (comprar, pagar, confirmar, apagar)
+    • Mover ficheiros em massa
+
+  Como responder à confirmação:
+    → Aparece um modal na interface com CONFIRMAR / CANCELAR
+    → Tens 60 segundos para responder
+    → Se não responderes, a ação é cancelada automaticamente
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🎙️ VOZ
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  • Clica no ícone 🎤 para falar em vez de escrever
+  • O HELIOS responde em voz (edge-tts por padrão)
+  • Para mudar a voz: edita config/settings.yaml
+      tts_provider: "edge"     → Microsoft Neural (gratuito)
+      tts_provider: "elevenlabs" → Voz ultra-humana (precisa API key)
+      tts_provider: "openai"   → OpenAI TTS (precisa API key)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  💾 MEMÓRIA PERSISTENTE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  O HELIOS lembra-se das últimas 50 mensagens entre sessões.
+  Base de dados: data/helios.db (SQLite)
+
+  Para limpar o histórico:
+    → Clica no botão "Clear" no painel de conversa
+    → Ou diz: "Limpa o histórico de conversa"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ⚙️  CONFIGURAÇÃO  (config/settings.yaml)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Ficheiro .env (variáveis privadas):
+    GROQ_API_KEY=...          → Chave API do Groq (obrigatória)
+    ELEVENLABS_API_KEY=...    → Chave ElevenLabs (opcional, voz humana)
+    OPENAI_API_KEY=...        → Chave OpenAI (opcional)
+
+  settings.yaml (comportamento):
+    groq_model: "llama-3.1-8b-instant"   → Modelo de IA (rápido)
+    tts_enabled: true/false               → Liga/desliga voz
+    tts_provider: edge/elevenlabs/openai  → Motor de voz
+    edge_voice: "pt-PT-DuarteNeural"      → Voz portuguesa masculina
+    edge_voice: "pt-PT-RaquelNeural"      → Voz portuguesa feminina
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🔌 COMO TRANSPORTAR O HELIOS (pen/portátil)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Para levar o HELIOS numa pen ou noutro PC:
+
+  1. Copia a pasta HELIOS_V7 para a pen
+  2. No PC de destino, garante que tens:
+     → Python 3.11+ instalado (python.org)
+     → Google Chrome instalado
+  3. Abre o terminal na pasta HELIOS_V7
+  4. Instala dependências: pip install -r requirements.txt
+  5. Corre: .\start.bat
+
+  Para criar um .exe portátil (sem precisar de instalar nada):
+  → Corre no terminal: pip install pyinstaller
+  → Corre: pyinstaller --onefile --noconsole core\main.py
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🐞 RESOLUÇÃO DE PROBLEMAS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  "Não responde / demora muito"
+    → Verifica ligação à internet (Groq precisa de internet)
+    → Verifica se a API key está correta no .env
+    → Vê o log: helios.log
+
+  "Rate limit atingido"
+    → Aguarda 30-60 segundos e tenta de novo
+    → O modelo llama-3.1-8b-instant tem limites maiores
+
+  "Sem voz"
+    → Verifica se tts_enabled: true no settings.yaml
+    → Instala: pip install edge-tts pygame
+
+  "Erro no plugin X"
+    → Vê detalhes em: helios.log
+    → Playwright (web_vision): playwright install chromium
+
+  Log completo: HELIOS_V7\helios.log
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  H.E.L.I.O.S. V7 | Desenvolvido por Simão Coelho | 2026
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

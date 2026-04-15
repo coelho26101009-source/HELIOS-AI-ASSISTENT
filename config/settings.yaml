@@ -1,0 +1,37 @@
+# H.E.L.I.O.S. — Configuração Principal
+# Edita este ficheiro para personalizar o comportamento do assistente.
+
+# ── LLM ────────────────────────────────────────────────────────────────────────
+groq_api_key: ""          # Obter em: https://console.groq.com
+groq_model:   "llama-3.3-70b-versatile"
+
+ollama_enabled: true
+ollama_url:     "http://localhost:11434"
+ollama_model:   "llama3.2:3b"
+
+# ── Voz ────────────────────────────────────────────────────────────────────────
+voice:
+  tts_enabled: true
+  tts_provider: "edge"       # auto | elevenlabs | openai | edge
+  elevenlabs_voice_id: "RROBrqjHiRb8zmRgGV11"
+  openai_voice: "onyx"
+  openai_speed: 1.0
+  edge_voice: "pt-PT-DuarteNeural"
+  edge_rate: "-5%"
+# ── IoT / Smart Home ───────────────────────────────────────────────────────────
+iot:
+  webhook_url:          ""   # URL do hub (Home Assistant, n8n, Make, etc.)
+  notification_webhook: ""   # URL para notificações no telemóvel (ntfy, Pushover)
+
+# ── Organizer ─────────────────────────────────────────────────────────────────
+organizer:
+  watch_downloads:  true
+  auto_organize:    false     # true = organiza automaticamente sem pedir
+  cache_clean_day:  "sunday"  # dia da semana para limpeza automática
+
+# ── UI ─────────────────────────────────────────────────────────────────────────
+ui:
+  port:   8765
+  width:  1200
+  height: 800
+  mode:   "chrome"    # chrome | default | edge | safari
