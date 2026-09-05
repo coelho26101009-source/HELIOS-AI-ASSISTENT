@@ -261,6 +261,143 @@ const PROBE = `(() => {
   };
 })()`;
 
+/**
+ * DRIVE the graph, then measure. Separate from PROBE because these are claims
+ * about what the view DOES, and the only way to check "selecting a node
+ * highlights its edges and fades the rest" is to select one and look.
+ *
+ * Returns nulls rather than throwing when the graph is absent, so the caller
+ * can report "not measured" instead of a crash that reads like a failure.
+ */
+const GRAPH_INTERACT = `(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const qa = (s) => Array.from(document.querySelectorAll(s));
+  const svg = document.querySelector('.graph-svg');
+  const nodes = qa('.graph-node');
+  if (!svg || nodes.length < 2) return { measured: false, nodeCount: nodes.length };
+
+  const positionOf = (g) => {
+    const m = /translate\\((-?[\\d.]+) (-?[\\d.]+)\\)/.exec(g.getAttribute('transform') || '');
+    return m ? { x: parseFloat(m[1]), y: parseFloat(m[2]) } : null;
+  };
+  const edgeLength = (line) => Math.hypot(
+    Number(line.getAttribute('x2')) - Number(line.getAttribute('x1')),
+    Number(line.getAttribute('y2')) - Number(line.getAttribute('y1')));
+
+  /* Related nodes should sit nearer than unrelated ones. The fixture's most
+     connected node is the project hub; measuring the mean edge length against
+     the mean distance between ALL pairs is the honest version of "the layout
+     is graph-aware" -- a ring layout scores 1.0 here. */
+  const points = nodes.map(positionOf).filter(Boolean);
+  let pairTotal = 0, pairCount = 0;
+  for (let i = 0; i < points.length; i += 1) {
+    for (let j = i + 1; j < points.length; j += 1) {
+      pairTotal += Math.hypot(points[i].x - points[j].x, points[i].y - points[j].y);
+      pairCount += 1;
+    }
+  }
+  const edges = qa('.graph-edge');
+  const meanEdge = edges.length
+    ? edges.reduce((total, line) => total + edgeLength(line), 0) / edges.length : 0;
+  const meanPair = pairCount ? pairTotal / pairCount : 0;
+
+  /* ---- selecting a node focuses it -------------------------------------- */
+  const target = nodes.reduce((best, g) => {
+    const id = g.getAttribute('aria-label') || '';
+    return id.length > (best.getAttribute('aria-label') || '').length ? g : best;
+  }, nodes[0]);
+  target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  await sleep(250);
+
+  const selected = qa('.graph-node.is-selected').length;
+  const dimmedNodes = qa('.graph-node.is-dim').length;
+  const litEdges = qa('.graph-edge.is-lit').length;
+  const dimmedEdges = qa('.graph-edge.is-dim').length;
+  const detailPanel = !!document.querySelector('.graph-selected');
+  /* Faded, not hidden: the shape of the rest of the graph is context. */
+  const dimOpacity = dimmedNodes
+    ? Number(getComputedStyle(qa('.graph-node.is-dim')[0]).opacity) : null;
+
+  /* ---- dragging a node moves THAT node and nothing else ------------------ */
+  const before = positionOf(target);
+  const others = nodes.filter((g) => g !== target).map(positionOf);
+  const rect = svg.getBoundingClientRect();
+  const at = (x, y, type) => new PointerEvent(type, {
+    bubbles: true, clientX: x, clientY: y, pointerId: 1, pointerType: 'mouse' });
+  target.dispatchEvent(at(rect.left + 100, rect.top + 100, 'pointerdown'));
+  svg.dispatchEvent(at(rect.left + 220, rect.top + 190, 'pointermove'));
+  svg.dispatchEvent(at(rect.left + 220, rect.top + 190, 'pointerup'));
+  await sleep(250);
+  const after = positionOf(target);
+  const othersAfter = qa('.graph-node').filter((g) => g !== target).map(positionOf);
+  const draggedBy = (before && after) ? Math.hypot(after.x - before.x, after.y - before.y) : 0;
+  const othersMoved = others.some((point, index) => {
+    const now = othersAfter[index];
+    return point && now && Math.hypot(now.x - point.x, now.y - point.y) > 1;
+  });
+
+  /* ---- the layout is deterministic across renders ------------------------ */
+  return {
+    measured: true,
+    nodeCount: nodes.length,
+    edgeCount: edges.length,
+    selectedCount: selected,
+    dimmedNodes, litEdges, dimmedEdges, detailPanel, dimOpacity,
+    meanEdge: Math.round(meanEdge), meanPair: Math.round(meanPair),
+    draggedBy: Math.round(draggedBy),
+    othersMoved,
+  };
+})()`;
+
+/**
+ * TYPE IN THE SEARCH BOX and read what the view says back.
+ *
+ * Matching DIMS every node that is not a hit, so a query with no hits fades the
+ * entire graph — which looks exactly like a view that failed to load. The only
+ * thing separating "nothing here is called that" from "something broke" is the
+ * text the footer prints, and text that is only asserted in the source can move
+ * into a comment and keep passing. So it is typed and read here.
+ *
+ * The value is set through React's own native setter: assigning `.value` on a
+ * controlled input updates the DOM and never reaches React, so the component
+ * would re-render the old value straight back over it.
+ */
+const SEARCH_PROBE = `(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const input = document.querySelector('#graph-search');
+  const foot = () => (document.querySelector('.graph-foot')?.textContent || '').trim();
+  if (!input) return { measured: false };
+
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype, 'value').set;
+  const type = async (text) => {
+    setter.call(input, text);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(300);
+  };
+
+  const idle = foot();
+
+  await type('zzzzznaoexiste');
+  const noMatch = foot();
+  const dimmedOnNoMatch = document.querySelectorAll('.graph-node.is-dim').length;
+  const totalNodes = document.querySelectorAll('.graph-node').length;
+
+  const label = (document.querySelector('.graph-node')?.getAttribute('aria-label') || '');
+  const name = label.split(' — ')[0];
+  await type(name);
+  const oneMatch = foot();
+
+  await type('');
+  await sleep(200);
+  return {
+    measured: true,
+    idle, noMatch, oneMatch,
+    restored: foot() === idle,
+    dimmedOnNoMatch, totalNodes,
+  };
+})()`;
+
 function serve() {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
@@ -326,6 +463,18 @@ async function main() {
         await window.webContents.executeJavaScript(OPEN(section, tab));
         await wait(900);
         const measured = await window.webContents.executeJavaScript(PROBE);
+        // The graph is the one view whose value is in what it DOES, so it is
+        // driven as well as measured. Selecting and dragging is deliberately
+        // the LAST thing done in this view: it leaves the graph in a moved
+        // state, and the next iteration reloads the page anyway.
+        if (label === 'grafo') {
+          // Search FIRST: it clears its own query, while the drag below
+          // deliberately leaves the graph rearranged.
+          measured.search =
+            await window.webContents.executeJavaScript(SEARCH_PROBE, true);
+          measured.interaction =
+            await window.webContents.executeJavaScript(GRAPH_INTERACT, true);
+        }
         report.views.push({ viewport: viewport.name, view: label, ...measured });
         if (measured.horizontalOverflow || measured.offenders.length) report.ok = false;
       }

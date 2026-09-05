@@ -802,14 +802,30 @@ export function GraphPage({
   const [type, setType] = useState("");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
+  const [hovered, setHovered] = useState<string | null>(null);
   const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
-  const dragging = useRef<{ x: number; y: number } | null>(null);
+  /* MANUAL POSITIONS, laid over the computed ones.
+     Dragging a node moves it here and the simulation is not re-run, so a graph
+     the user has arranged by hand stays arranged. It is per-view state and not
+     persisted: writing layout coordinates to the database would make the graph
+     a document, and the next derived node would arrive with nowhere to go. */
+  const [moved, setMoved] = useState<Record<string, { x: number; y: number }>>({});
+  const panning = useRef<{ x: number; y: number } | null>(null);
+  const draggingNode = useRef<{ id: string; x: number; y: number } | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
   const nodes = graph?.nodes ?? [];
   const edges = graph?.edges ?? [];
 
-  const positions = useMemo(() => layout(nodes, edges), [nodes, edges]);
+  const computed = useMemo(() => layout(nodes, edges), [nodes, edges]);
+  const positions = useMemo(() => {
+    if (!Object.keys(moved).length) return computed;
+    const merged = new Map(computed);
+    for (const [id, point] of Object.entries(moved)) {
+      if (merged.has(id)) merged.set(id, { id, x: point.x, y: point.y });
+    }
+    return merged;
+  }, [computed, moved]);
 
   const needle = query.trim().toLowerCase();
   const matches = useMemo(() => {
@@ -818,15 +834,40 @@ export function GraphPage({
       .map((node) => node.id));
   }, [nodes, needle]);
 
+  /* THE FOCUS is whatever the user is pointing at, then whatever they selected.
+     Hover is transient and selection is sticky, so hover wins while it lasts —
+     that is what makes sweeping the pointer across a graph a way to READ it. */
+  const focus = hovered ?? selected;
+
   const neighbours = useMemo(() => {
-    if (!selected) return null;
-    const set = new Set<string>([selected]);
+    if (!focus) return null;
+    const set = new Set<string>([focus]);
     for (const edge of edges) {
-      if (edge.source === selected) set.add(edge.target);
-      if (edge.target === selected) set.add(edge.source);
+      if (edge.source === focus) set.add(edge.target);
+      if (edge.target === focus) set.add(edge.source);
     }
     return set;
-  }, [selected, edges]);
+  }, [focus, edges]);
+
+  /** Client pixels -> viewBox units. Pan and drag are both wrong without it:
+      the SVG is scaled to fit its box and then again by `view.scale`, so a
+      30px gesture is not 30 units of graph. */
+  const toGraphUnits = (dx: number, dy: number) => {
+    const box = svgRef.current?.getBoundingClientRect();
+    const fit = box && box.width ? VIEW / box.width : 1;
+    return { dx: (dx * fit) / view.scale, dy: (dy * fit) / view.scale };
+  };
+
+  /** Put a node in the middle of the canvas, at the current zoom. */
+  const centreOn = (id: string) => {
+    const point = positions.get(id);
+    if (!point) return;
+    setView((current) => ({
+      ...current,
+      x: (VIEW / 2 - point.x) * current.scale,
+      y: (VIEW / 2 - point.y) * current.scale,
+    }));
+  };
 
   /* WHEEL ZOOM NEEDS A NON-PASSIVE LISTENER.
      React registers onWheel passively, so calling preventDefault there is
@@ -848,7 +889,35 @@ export function GraphPage({
     return () => element.removeEventListener("wheel", handler);
   }, []);
 
+  /* SEARCH FOCUSES THE MATCH instead of only dimming everything else.
+     Typing a name and being left to hunt for the one undimmed dot in a graph
+     you have panned away from is not a search. A single match is selected and
+     centred; several matches stay highlighted, because centring on an arbitrary
+     one of them would be a guess. */
+  useEffect(() => {
+    if (!matches || matches.size !== 1) return;
+    const [id] = [...matches];
+    setSelected(id);
+    centreOn(id);
+    // Only when the query changes: re-centring on every render would fight the
+    // user's own panning.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needle]);
+
   useEffect(() => { onRefresh(type); }, [type, onRefresh]);
+
+  /* A node that is no longer in the payload cannot stay selected or displaced:
+     a type filter, or a deleted node, would otherwise leave the detail panel
+     naming something the graph no longer contains. */
+  useEffect(() => {
+    const alive = new Set(nodes.map((node) => node.id));
+    setSelected((current) => (current && !alive.has(current) ? null : current));
+    setMoved((current) => {
+      const kept = Object.fromEntries(
+        Object.entries(current).filter(([id]) => alive.has(id)));
+      return Object.keys(kept).length === Object.keys(current).length ? current : kept;
+    });
+  }, [nodes]);
 
   if (loading && graph === null) {
     return <div className="page__inner"><Skeleton height={420} /></div>;
@@ -878,7 +947,14 @@ export function GraphPage({
         <SearchField id="graph-search" value={query} onChange={setQuery}
                      placeholder="Procurar um nó…" />
         <span className="stage__spacer" />
-        <Button size="sm" onClick={() => { setView({ x: 0, y: 0, scale: 1 }); setSelected(null); }}>
+        <Button size="sm" onClick={() => {
+          setView({ x: 0, y: 0, scale: 1 });
+          setSelected(null);
+          // "Repor vista" resets the VIEW and the arrangement. Leaving hand-moved
+          // nodes where they were would make the button a partial undo, which is
+          // the least predictable kind.
+          setMoved({});
+        }}>
           Repor vista
         </Button>
       </div>
@@ -888,33 +964,56 @@ export function GraphPage({
           ref={svgRef}
           viewBox={`0 0 ${VIEW} ${VIEW}`}
           className="graph-svg"
+          data-focused={focus ? "true" : undefined}
           role="img"
           aria-label={`Grafo com ${nodes.length} nós e ${edges.length} ligações`}
           onPointerDown={(event) => {
-            dragging.current = { x: event.clientX, y: event.clientY };
+            // Empty canvas: pan. A node starts its own drag in its handler and
+            // stops the event there, so the two gestures never both run.
+            panning.current = { x: event.clientX, y: event.clientY };
             (event.target as Element).setPointerCapture?.(event.pointerId);
           }}
           onPointerMove={(event) => {
-            if (!dragging.current) return;
-            const dx = event.clientX - dragging.current.x;
-            const dy = event.clientY - dragging.current.y;
-            dragging.current = { x: event.clientX, y: event.clientY };
-            setView((current) => ({ ...current, x: current.x + dx, y: current.y + dy }));
+            const node = draggingNode.current;
+            if (node) {
+              const { dx, dy } = toGraphUnits(event.clientX - node.x, event.clientY - node.y);
+              draggingNode.current = { ...node, x: event.clientX, y: event.clientY };
+              setMoved((current) => {
+                const base = current[node.id] ?? positions.get(node.id);
+                if (!base) return current;
+                return { ...current, [node.id]: { x: base.x + dx, y: base.y + dy } };
+              });
+              return;
+            }
+            if (!panning.current) return;
+            const dx = event.clientX - panning.current.x;
+            const dy = event.clientY - panning.current.y;
+            panning.current = { x: event.clientX, y: event.clientY };
+            const moveBy = toGraphUnits(dx, dy);
+            setView((current) => ({
+              ...current,
+              x: current.x + moveBy.dx * current.scale,
+              y: current.y + moveBy.dy * current.scale,
+            }));
           }}
-          onPointerUp={() => { dragging.current = null; }}
-          onPointerLeave={() => { dragging.current = null; }}
+          onPointerUp={() => { panning.current = null; draggingNode.current = null; }}
+          onPointerLeave={() => { panning.current = null; draggingNode.current = null; }}
         >
-          <g transform={`translate(${view.x} ${view.y}) scale(${view.scale}) `
-                        + `translate(${(1 - 1 / view.scale) * 0} 0)`}>
+          <g transform={`translate(${view.x} ${view.y}) scale(${view.scale})`}>
             {edges.map((edge) => {
               const a = positions.get(edge.source);
               const b = positions.get(edge.target);
               if (!a || !b) return null;
-              const dimmed = neighbours
-                && !(neighbours.has(edge.source) && neighbours.has(edge.target));
+              // An edge is LIT when it touches the focused node, dimmed when a
+              // focus exists and it does not. Both ends have to be in the
+              // neighbourhood set for the line to belong to the focus, or every
+              // edge leaving a neighbour would light up too.
+              const lit = Boolean(focus)
+                && (edge.source === focus || edge.target === focus);
+              const dimmed = Boolean(focus) && !lit;
               return (
                 <line key={edge.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-                      className={`graph-edge${dimmed ? " is-dim" : ""}`}
+                      className={`graph-edge${dimmed ? " is-dim" : ""}${lit ? " is-lit" : ""}`}
                       strokeWidth={Math.min(3, 1 + edge.weight * 0.4)} />
               );
             })}
@@ -927,12 +1026,25 @@ export function GraphPage({
               return (
                 <g key={node.id}
                    className={`graph-node${dimmed ? " is-dim" : ""}`
-                              + `${selected === node.id ? " is-selected" : ""}`}
+                              + `${selected === node.id ? " is-selected" : ""}`
+                              + `${focus === node.id ? " is-focus" : ""}`}
                    data-type={node.type}
                    transform={`translate(${point.x} ${point.y})`}
                    tabIndex={0}
                    role="button"
                    aria-label={`${node.title} — ${nodeTypeLabel(node.type)}`}
+                   onPointerDown={(event) => {
+                     // The node owns this gesture. Without stopPropagation the
+                     // canvas pans at the same time and the node appears to
+                     // slide twice as fast as the pointer.
+                     event.stopPropagation();
+                     draggingNode.current = { id: node.id, x: event.clientX, y: event.clientY };
+                     (event.currentTarget as Element).setPointerCapture?.(event.pointerId);
+                   }}
+                   onPointerEnter={() => setHovered(node.id)}
+                   onPointerLeave={() => setHovered((current) => (current === node.id ? null : current))}
+                   onFocus={() => setHovered(node.id)}
+                   onBlur={() => setHovered((current) => (current === node.id ? null : current))}
                    onClick={(event) => {
                      event.stopPropagation();
                      setSelected((current) => (current === node.id ? null : node.id));
@@ -962,17 +1074,37 @@ export function GraphPage({
         {selected && (
           <div className="graph-selected">
             <strong>{nodes.find((node) => node.id === selected)?.title}</strong>
+            <span className="dim" style={{ fontSize: 11 }}>
+              {Math.max(0, (neighbours?.size ?? 1) - 1)} ligado(s)
+            </span>
             <Button size="sm" onClick={() => onOpenNode(selected)}>Abrir detalhe</Button>
           </div>
         )}
       </div>
 
       <div className="graph-foot">
-        <span className="dim">
-          {nodes.length} nós · {edges.length} ligações
-          {graph?.truncated && ` · a mostrar os mais ligados de ${graph.total}`}
-          {" · arrasta para mover, roda para ampliar, duplo-clique abre o detalhe"}
-        </span>
+        {/* A SEARCH THAT FINDS NOTHING HAS TO SAY SO.
+            Matching dims every node that is not a hit, so a query with no hits
+            fades the WHOLE graph and looks exactly like a view that broke.
+            The count is stated instead: it is the only difference between
+            "nothing here is called that" and "something went wrong". */}
+        {needle ? (
+          <span className={matches && matches.size ? "dim" : ""}
+                role="status" aria-live="polite">
+            {matches && matches.size
+              ? `${matches.size} de ${nodes.length} nós `
+                + `${matches.size === 1 ? "corresponde" : "correspondem"} `
+                + `a “${query.trim()}”`
+              : `Nenhum nó corresponde a “${query.trim()}”`}
+          </span>
+        ) : (
+          <span className="dim">
+            {nodes.length} nós · {edges.length} ligações
+            {graph?.truncated && ` · a mostrar os mais ligados de ${graph.total}`}
+            {" · arrasta o fundo para mover, arrasta um nó para o recolocar, "}
+            {"roda para ampliar, duplo-clique abre o detalhe"}
+          </span>
+        )}
       </div>
 
       <RetrievalFooter overview={overview} />

@@ -112,8 +112,62 @@ class MemoryStack:
             if memories or messages:
                 logger.info("Índice preenchido: %d memórias, %d mensagens",
                             memories, messages)
+            nodes, edges = self.reconcile_knowledge()
+            if nodes or edges:
+                logger.info("Second Brain reconciliado: %d nós, %d ligações",
+                            nodes, edges)
         except Exception:
             logger.exception("Falha a preencher o índice de recuperação")
+
+    def reconcile_knowledge(self, limit: int = 300) -> tuple[int, int]:
+        """Re-derive Second Brain nodes and edges from the ACTIVE memories.
+
+        WHY THIS EXISTS. Nodes and edges are derived at capture time, so
+        improving the derivation only ever affects memories captured
+        afterwards. An install that already holds memories keeps showing
+        whatever the OLD rule produced, and the improvement looks like it did
+        not work. Running the current rule over the memories that already exist
+        is what makes the fix visible on a machine with history rather than
+        only on a fresh one.
+
+        WHAT IT DOES NOT FIX, MEASURED. This build's own development database
+        was checked: 15 conversations, 177 messages, 0 memories, and 2
+        knowledge nodes -- both ``origin='manual'``, typed by hand in the
+        Second Brain. Reconciliation correctly returns ``(0, 0)`` there and the
+        graph still reads "2 nós · 0 ligações", because there are no memories
+        to re-derive anything from. That is the honest outcome and not a
+        failure of this method: the graph fills as memories are captured. It is
+        recorded here so the next reader does not mistake a correct no-op for a
+        broken pass.
+
+        SAFE TO RUN REPEATEDLY. ``upsert_node`` recognises a node by the slug
+        of its title and ``link`` collapses duplicates, so a second pass adds
+        nothing; it only bumps mention counts, which is what recurring evidence
+        is supposed to do. It reads ACTIVE memories only, which have already
+        passed the safety gate, so nothing new enters the store.
+
+        Returns ``(nodes, edges)`` as they stand afterwards, so a caller can
+        log a real number instead of claiming a result it did not measure.
+        """
+        if not self.ready or not self.long_term_enabled:
+            return (0, 0)
+        try:
+            # Collapse mirrored copies of a symmetric relation FIRST. Storing
+            # one canonical direction is a rule about writes, so a database
+            # written by an earlier build still holds both rows of every pair
+            # it saw twice -- and that database is the only one that has the
+            # problem. Done before the snapshot so the returned numbers stay
+            # "what this pass added"; the removal logs its own count.
+            self.knowledge.dedupe_symmetric_edges()
+            before = self.knowledge.stats()
+            for memory in self.memories.list(limit=limit, status="active"):
+                self.promote_to_knowledge(
+                    memory, conversation_id=memory.get("sourceConversationId"))
+            after = self.knowledge.stats()
+        except Exception:
+            logger.exception("Falha a reconciliar o Second Brain")
+            return (0, 0)
+        return (after["nodes"] - before["nodes"], after["edges"] - before["edges"])
 
     # ------------------------------------------------------------- lifecycle
 
@@ -258,6 +312,20 @@ class MemoryStack:
         that is the user asking directly. Inference is skipped entirely when
         automatic capture is off, so the switch in Definições means what it
         says rather than merely lowering a threshold.
+
+        WHY THE STATUS COMES FROM THE EXTRACTOR AND NOT FROM HERE.
+        A well-evidenced inferred fact may now be stored ACTIVE rather than as
+        an inert candidate (see core.memory_extraction). The decision belongs to
+        the extractor because that is where the evidence is; this method's job
+        is to check the two things the extractor cannot see -- whether long-term
+        memory is on at all, and whether the user allowed Nano to propose
+        memories by itself -- and then to hand the result to the store, which
+        applies the safety gate one final time.
+
+        ``memory_auto_capture`` is the single switch. When it is off, NOTHING
+        inferred is written: not active, not candidate. A switch that only
+        downgraded automatic memories to candidates would still be filling a
+        list the user asked Nano not to fill.
         """
         if not self.ready or not self.long_term_enabled:
             return []
@@ -268,12 +336,18 @@ class MemoryStack:
             result = self.memories.remember(
                 candidate.text, kind=candidate.kind, origin=candidate.origin,
                 trust=TrustLevel.USER.value, confidence=candidate.confidence,
-                importance=candidate.importance,
+                importance=candidate.importance, status=candidate.status,
                 source_conversation_id=conversation_id, source_message_id=message_id)
             if result.get("ok") and result.get("memory"):
                 memory = result["memory"]
                 saved.append(memory)
                 if memory.get("status") == "active":
+                    # SAME PIPELINE AS AN EXPLICIT MEMORY, deliberately. An
+                    # automatically captured fact is not a second class of
+                    # thing living in its own silo -- it becomes a Second Brain
+                    # node through the identical derivation, so the graph, the
+                    # retrieval index and the ContextComposer see it exactly
+                    # like anything the user typed by hand.
                     self.promote_to_knowledge(memory, conversation_id=conversation_id)
         return saved
 
@@ -298,40 +372,89 @@ class MemoryStack:
 
     # ------------------------------------------------------- knowledge graph
 
+    #: How many entities one memory may name. Three, because "trabalho com
+    #: Python e Docker no Windows" is a real sentence with three; more than that
+    #: is a list, and a list produces a hairball.
+    MAX_ENTITIES_PER_MEMORY = 3
+
     def promote_to_knowledge(self, memory: dict, *,
                              conversation_id: str | None = None) -> list[dict]:
-        """Derive Second Brain nodes from ONE memory. Conservative on purpose.
+        """Derive Second Brain nodes and EDGES from ONE memory.
 
-        A node is created only when the memory has a kind that names a class of
-        thing (a device, a tool, a project, a person) AND contains a
-        proper-noun-shaped entity to name it after. "Prefiro respostas curtas"
-        creates nothing: there is no entity in it, and a node called "respostas
-        curtas" would be clutter. "O meu PC tem uma GTX 1660 Ti" creates one.
+        WHY THE GRAPH USED TO BE DOTS
+        -----------------------------
+        This method created a node per proper noun and drew an edge only when a
+        single sentence happened to contain exactly two of them. "O meu PC tem
+        uma GTX 1660 Ti" contains one, so it produced one node and no edge, and
+        the graph honestly reported "2 nós · 0 ligações" -- honest, and useless.
+
+        The missing half was the SUBJECT. A sentence like that has two ends: the
+        thing being described and the thing it is described with. The left end
+        is not a proper noun, so the entity extractor could never see it, but
+        the grammar names it outright. ``memory_extraction.subject`` reads it,
+        and the machine collapses onto one canonical node so every hardware fact
+        lands on the same "O meu PC" instead of on three synonyms.
+
+        WHAT IS EVIDENCE AND WHAT WOULD BE INVENTION
+        --------------------------------------------
+        * subject + entity  -> an edge, direction subject -> entity, with the
+          relation the sentence's own verb supports ("tem" -> has, "usa" ->
+          uses). The verb is in the text; nothing is guessed.
+        * no subject, two or more entities -> ``related_to`` between them. They
+          co-occur in one stored fact, which is evidence that they belong
+          together and NOT evidence of what the connection is.
+        * no verb this module recognises -> ``related_to``, always. An invented
+          ``depends_on`` is worse than an honest generic, because it reads as
+          something the user said.
+
+        Nothing here creates a node from raw message text: the input is an
+        ACTIVE memory that has already passed the safety gate.
         """
+        text = str(memory.get("text") or "")
         node_type = memory_extraction.NODE_TYPE_FOR_KIND.get(str(memory.get("kind")))
-        if not node_type:
+        names = memory_extraction.entities(text, limit=self.MAX_ENTITIES_PER_MEMORY)
+        subject_node = memory_extraction.subject(text)
+
+        # A memory with no subject AND no usable entity names nothing that can
+        # be drawn. "Prefiro respostas curtas" is exactly that, and a node
+        # called "respostas curtas" is the clutter this design exists to avoid.
+        if not subject_node and (not node_type or not names):
             return []
-        names = memory_extraction.entities(memory.get("text") or "", limit=2)
-        if not names:
-            return []
+
         created: list[dict] = []
-        for name in names:
+
+        def _add(title: str, kind: str) -> dict | None:
             node = self.knowledge.upsert_node(
-                name, node_type=node_type, summary=memory.get("text") or "",
-                origin="derived")
+                title, node_type=kind, summary=text, origin="derived")
             if node is None:
-                continue
+                return None
             self.knowledge.attach(node["id"], "memory", memory["id"])
             if conversation_id:
                 self.knowledge.attach(node["id"], "conversation", str(conversation_id))
             created.append(node)
-        # Two entities named in the SAME memory are evidence of a relationship.
-        # The relation stays `related_to`: the sentence proves they belong
-        # together, not what the connection is, and asserting `depends_on` from
-        # that would be inventing structure.
-        if len(created) == 2:
-            self.knowledge.link(created[0]["id"], created[1]["id"],
-                                relation=DEFAULT_RELATION)
+            return node
+
+        head: dict | None = None
+        if subject_node:
+            head = _add(subject_node[0], subject_node[1])
+
+        entity_nodes: list[dict] = []
+        if node_type:
+            for name in names:
+                node = _add(name, node_type)
+                if node is not None:
+                    entity_nodes.append(node)
+
+        relation = memory_extraction.relation_for(text)
+        if head is not None:
+            for node in entity_nodes:
+                if node["id"] != head["id"]:
+                    self.knowledge.link(head["id"], node["id"], relation=relation)
+        elif len(entity_nodes) >= 2:
+            for index, left in enumerate(entity_nodes):
+                for right in entity_nodes[index + 1:]:
+                    self.knowledge.link(left["id"], right["id"],
+                                        relation=DEFAULT_RELATION)
         return created
 
     # ------------------------------------------------------------ summaries

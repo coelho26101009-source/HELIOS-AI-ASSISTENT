@@ -1918,14 +1918,26 @@ kbd {
 .graph-svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
 .graph-svg:active { cursor: grabbing; }
 
+/* EDGES ARE THE POINT OF THE VIEW, so they are drawn strongly enough to be
+   read at rest, not only when something is selected. At 0.14 alpha the graph
+   looked like isolated dots even when it had real connections. */
 .graph-edge {
-  stroke: rgba(255, 236, 236, 0.14); fill: none;
+  stroke: rgba(255, 236, 236, 0.24); fill: none;
   transition: stroke var(--transition), opacity var(--transition);
 }
-.graph-edge.is-dim { opacity: 0.15; }
+/* Unrelated elements FADE, they do not vanish: the shape of the rest of the
+   graph is context for the part being read. */
+.graph-edge.is-dim { opacity: 0.14; }
+.graph-edge.is-lit { stroke: var(--accent-hover); opacity: 1; }
 
-.graph-node { cursor: pointer; transition: opacity var(--transition); }
-.graph-node.is-dim { opacity: 0.22; }
+.graph-node { cursor: grab; transition: opacity var(--transition); }
+.graph-node:active { cursor: grabbing; }
+.graph-node.is-dim { opacity: 0.26; }
+.graph-node.is-focus .graph-node__dot { stroke: var(--accent-hover); stroke-width: 2.5; }
+.graph-node.is-focus .graph-node__label { fill: var(--text); font-weight: 600; }
+@media (prefers-reduced-motion: reduce) {
+  .graph-edge, .graph-node, .graph-node__dot { transition: none; }
+}
 .graph-node__dot {
   fill: var(--surface-4); stroke: var(--border-strong); stroke-width: 1.5;
   transition: fill var(--transition), stroke var(--transition), filter var(--transition);

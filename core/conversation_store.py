@@ -147,6 +147,30 @@ class ConversationStore:
         operation with a different cost, and it belongs to the retrieval index
         (``search_messages``) rather than to a list query that runs on every
         keystroke in the rail.
+
+        WHY THE ORDER IS NOT JUST A TIMESTAMP
+        -------------------------------------
+        ``datetime.now()`` on Windows is backed by ``GetSystemTimeAsFileTime``,
+        whose resolution is 15.625 ms -- measured on this machine, 199 761 of
+        200 000 consecutive calls returned the SAME string. Two threads touched
+        inside one tick therefore carry identical ``last_message_at`` values,
+        and the tie fell through to ``created_at DESC``, which puts the thread
+        created LAST on top no matter which one was actually written to last.
+
+        That is not hypothetical: reopening an older thread and posting to it
+        left it below the newer one in 8 of 30 runs of the exact sequence.
+        A human cannot type twice inside 15 ms, so the defect is invisible in
+        use and reliably visible in tests -- which is the shape of bug that
+        turns a green Windows CI leg red at random.
+
+        So the tie is broken on things that ARE strictly ordered:
+
+        * a thread with no messages yet sorts first within its tick. Its only
+          activity is its own creation, and "nova conversa" must land on top;
+        * otherwise the highest ``messages.id``, an AUTOINCREMENT column and so
+          a true record of which thread was written to last;
+        * then ``rowid``, so the result is total and the list never reshuffles
+          between two identical calls.
         """
         limit = max(1, min(int(limit), MAX_LIST_LIMIT))
         clauses, params = [], []
@@ -163,7 +187,11 @@ class ConversationStore:
                     "SELECT id, title, title_source, created_at, updated_at,"
                     " last_message_at, message_count, archived, metadata"
                     f" FROM conversations{where}"
-                    " ORDER BY COALESCE(last_message_at, created_at) DESC, created_at DESC"
+                    " ORDER BY COALESCE(last_message_at, created_at) DESC,"
+                    "  (last_message_at IS NULL) DESC,"
+                    "  (SELECT MAX(id) FROM messages m"
+                    "    WHERE m.conversation_id = conversations.id) DESC,"
+                    "  created_at DESC, rowid DESC"
                     " LIMIT ?", [*params, limit]).fetchall()
         except sqlite3.Error:
             logger.exception("Falha a listar conversas")

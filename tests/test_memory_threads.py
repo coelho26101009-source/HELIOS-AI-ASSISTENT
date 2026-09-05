@@ -93,6 +93,91 @@ def test_threads_are_ordered_by_recent_activity(stack):
     assert [t["id"] for t in stack.conversations.list(limit=5)][0] == first["id"]
 
 
+def test_the_reopened_thread_wins_a_timestamp_TIE_and_not_just_a_race(stack):
+    """The same guarantee as above, made to fail 100% of the time when broken.
+
+    The test above depends on the clock: on Windows ``datetime.now()`` has a
+    15.625 ms resolution, so the two threads USUALLY carry identical
+    ``last_message_at`` strings and the assertion exercises the tie -- but not
+    always, and a guard that only fires 8 times in 30 is a guard that gets
+    diagnosed as flaky and deleted.
+
+    So the tie is CONSTRUCTED instead of raced, in the shape a real session
+    produces it: two threads created minutes apart, so ``created_at`` genuinely
+    differs, and then both written to inside one 15 ms tick, so
+    ``last_message_at`` is one identical string. On the shipped ordering the tie
+    fell through to ``created_at DESC`` and the answer was deterministically
+    WRONG -- the newer thread on top, although the older one was written to
+    last.
+
+    Freezing ``created_at`` as well would have made this test worthless: with
+    every column equal, SQLite is free to return either row and the guard
+    passes or fails on the query plan.
+    """
+    first = stack.new_conversation()
+    stack.record_user_message("Conversa A.", conversation_id=first["id"])
+    second = stack.new_conversation()
+    stack.record_user_message("Conversa B.", conversation_id=second["id"])
+    stack.record_user_message("De volta à A.", conversation_id=first["id"])
+
+    # created_at stays ordered and actively favours the WRONG thread.
+    stack.conversations.conn.execute(
+        "UPDATE conversations SET created_at=? WHERE id=?",
+        ("2026-01-01T10:00:00+00:00", first["id"]))
+    stack.conversations.conn.execute(
+        "UPDATE conversations SET created_at=? WHERE id=?",
+        ("2026-01-01T10:05:00+00:00", second["id"]))
+    # Both last messages land in the same coarse tick.
+    tick = "2026-01-01T10:07:00.015625+00:00"
+    stack.conversations.conn.execute(
+        "UPDATE conversations SET last_message_at=?, updated_at=?", (tick, tick))
+    stack.conversations.conn.commit()
+
+    listed = [thread["id"] for thread in stack.conversations.list(limit=5)]
+    assert listed[0] == first["id"], (
+        "the tie fell through to creation order, so reopening an older thread "
+        "and writing to it would not raise it in the rail")
+
+
+def test_a_brand_new_empty_thread_is_still_listed_first_in_the_same_tie(stack):
+    """The other half of the tiebreak, which the fix must not trade away.
+
+    Breaking ties on the newest message id alone would sink a thread that has
+    no messages yet -- and a thread with no messages yet is the one the user
+    just created by clicking "nova conversa". It has to be on top.
+    """
+    old = stack.new_conversation()
+    stack.record_user_message("Uma mensagem qualquer.", conversation_id=old["id"])
+    fresh = stack.new_conversation()
+
+    frozen = "2026-01-01T00:00:00+00:00"
+    stack.conversations.conn.execute(
+        "UPDATE conversations SET created_at=?, updated_at=?,"
+        " last_message_at=CASE WHEN last_message_at IS NULL THEN NULL ELSE ? END",
+        (frozen, frozen, frozen))
+    stack.conversations.conn.commit()
+
+    listed = [thread["id"] for thread in stack.conversations.list(limit=5)]
+    assert listed[0] == fresh["id"]
+
+
+def test_listing_the_same_threads_twice_returns_the_same_order(stack):
+    """A total order, not merely a mostly-stable one. Two identical calls that
+    disagree make the rail reshuffle under the pointer on every refresh."""
+    for index in range(6):
+        thread = stack.new_conversation(f"Conversa {index}")
+        stack.record_user_message(f"mensagem {index}", conversation_id=thread["id"])
+    frozen = "2026-01-01T00:00:00+00:00"
+    stack.conversations.conn.execute(
+        "UPDATE conversations SET created_at=?, updated_at=?, last_message_at=?",
+        (frozen, frozen, frozen))
+    stack.conversations.conn.commit()
+
+    once = [thread["id"] for thread in stack.conversations.list(limit=10)]
+    twice = [thread["id"] for thread in stack.conversations.list(limit=10)]
+    assert once == twice and len(once) == 6
+
+
 def test_messages_of_one_thread_never_appear_in_another(stack):
     first = stack.new_conversation()
     stack.record_user_message("A minha placa gráfica é uma GTX 1660 Ti.",
@@ -274,21 +359,31 @@ def test_an_unrelated_memory_is_not_recalled(stack):
     assert "Bigodes" not in context.render()
 
 
-def test_an_inferred_memory_is_a_candidate_and_stays_out_of_context(stack):
+def test_a_weakly_evidenced_inferred_memory_is_a_candidate_and_stays_out_of_context(stack):
+    """The guarantee this test has always existed to protect.
+
+    It used to use "O meu PC tem uma GTX 1660 Ti", which is now exactly the kind
+    of well-evidenced fact Nano is meant to activate on its own (see the test
+    below). The CONTRACT is unchanged and is asserted here more precisely than
+    before: a guess Nano is not confident about is listed and inert, and inert
+    means it does not reach the model.
+    """
     stack.new_conversation()
-    saved = stack.capture_memories("O meu PC tem uma GTX 1660 Ti.")
+    saved = stack.capture_memories("O meu carro é um Golf GTI.")
     assert saved and saved[0]["origin"] == "inferred"
     assert saved[0]["status"] == "candidate"
-    context = stack.compose("fala-me da minha placa gráfica")
-    assert "GTX 1660 Ti" not in context.render()
+    assert saved[0]["confidence"] < memory_extraction.AUTO_ACTIVE_CONFIDENCE
+    context = stack.compose("fala-me do meu carro")
+    assert "Golf GTI" not in context.render()
 
 
 def test_promoting_a_candidate_puts_it_into_context(stack):
     stack.new_conversation()
-    saved = stack.capture_memories("O meu PC tem uma GTX 1660 Ti.")
+    saved = stack.capture_memories("O meu carro é um Golf GTI.")
+    assert saved[0]["status"] == "candidate"
     stack.memories.update(saved[0]["id"], status="active")
-    context = stack.compose("fala-me da minha placa gráfica")
-    assert "GTX 1660 Ti" in context.render()
+    context = stack.compose("fala-me do meu carro")
+    assert "Golf GTI" in context.render()
 
 
 def test_a_question_reaches_a_memory_that_shares_no_words_with_it(stack):
@@ -838,3 +933,185 @@ def test_the_brain_still_answers_when_memory_is_unavailable(stack, monkeypatch):
     prompt = asyncio.run(brain._build_system_prompt("olá", with_tools=False))
     assert prompt, "a memory failure produced no system prompt at all"
     assert brain.last_context_meta == {"error": "compose_failed"}
+
+
+# ============================================ a known fact pre-empts a lookup
+
+def test_a_turn_that_offers_tools_is_told_to_read_its_context_first(stack):
+    """The mem-06 defect, guarded at the layer Nano actually controls.
+
+    WHAT WENT WRONG, MEASURED
+    -------------------------
+    Told "tenho uma reunião com o Rui na quinta-feira às 15h" and asked, four
+    turns later, "ainda tenho aquela reunião?", every model tested reached for
+    ``calendar_list_events`` instead of answering. The fact was NOT missing:
+    it sat verbatim in the prompt, two turns inside a twenty-message window,
+    in both the OpenAI and the Google wire formats. Nothing in memory failed.
+
+    What failed was the instruction. Nano's tool rules opened with "usa
+    ferramentas sempre que precisares de interagir com o sistema operativo,
+    ficheiros, web ou dispositivos" and said nothing at all about the context
+    the model had just been handed, so a tool that merely matched the topic
+    outranked a fact that answered the question outright.
+
+    WHY THAT IS A REAL DEFECT AND NOT PEDANTRY
+    ------------------------------------------
+    The second turn was measured too. Handed an empty calendar -- empty because
+    nothing was ever written to it -- gpt-oss-20b told the user "não, ainda não
+    registei a reunião no calendário", and on another sample called
+    ``calendar_add_event`` and wrote to the calendar unasked. A recall question
+    became a denial of something Nano had itself confirmed one turn earlier,
+    and on one sample became an unrequested write. That is precisely the
+    same-conversation continuity failure this whole layer exists to prevent.
+    """
+    import asyncio
+
+    thread = stack.new_conversation()
+    stack.record_user_message("Tenho uma reunião com o Rui na quinta-feira às 15h.",
+                              conversation_id=thread["id"])
+    stack.record_assistant_message("Anotado: reunião com o Rui, quinta-feira às 15h.",
+                                   conversation_id=thread["id"])
+
+    brain = _brain_with(stack)
+    brain.load_history(thread["id"])
+    prompt = asyncio.run(brain._build_system_prompt("Ainda tenho aquela reunião?",
+                                                    with_tools=True))
+
+    # The precondition itself, in the prompt the model is actually sent.
+    assert "Antes de chamares uma ferramenta" in prompt
+    assert "responde diretamente" in prompt
+    # And the reason a lookup cannot be used to contradict the conversation.
+    assert "só conhece o que foi registado através dela" in prompt
+
+
+def test_the_context_precondition_travels_with_the_tool_rules(stack):
+    """It must be present exactly when a tool can be called, and not otherwise.
+
+    Two failure modes, opposite to each other. Dropped on a tool turn, the
+    defect is back. Made unconditional, every "olá" pays for it -- and the tool
+    rules are split out of the persona precisely because prompt tokens are the
+    scarce resource on an 8000 TPM account.
+    """
+    import asyncio
+
+    stack.new_conversation()
+    brain = _brain_with(stack)
+
+    with_tools = asyncio.run(brain._build_system_prompt("olá", with_tools=True))
+    without = asyncio.run(brain._build_system_prompt("olá", with_tools=False))
+
+    assert "Antes de chamares uma ferramenta" in with_tools
+    assert "Antes de chamares uma ferramenta" not in without
+
+
+def test_the_precondition_survives_translation_to_the_google_wire_format(stack):
+    """A rule that only reaches one provider is not a rule.
+
+    Google takes its system text in ``systemInstruction`` rather than as a
+    message, so the translation is a real step that can silently drop it --
+    and Gemini 3.8 Flash reproduces the mem-06 failure exactly, which makes
+    this the provider the guard matters most for.
+    """
+    import asyncio
+
+    from core import google_provider
+
+    stack.new_conversation()
+    brain = _brain_with(stack)
+    prompt = asyncio.run(brain._build_system_prompt("Ainda tenho aquela reunião?",
+                                                    with_tools=True))
+
+    body = google_provider.build_request(
+        "gemini-x-flash",
+        [{"role": "system", "content": prompt},
+         {"role": "user", "content": "Ainda tenho aquela reunião?"}],
+        None)
+    instruction = " ".join(part.get("text", "")
+                           for part in body["systemInstruction"]["parts"])
+    assert "Antes de chamares uma ferramenta" in instruction
+
+
+def test_the_guard_would_have_failed_on_the_rules_that_shipped_the_defect():
+    """Prove the guard is not vacuous.
+
+    The three tests above assert on text. Text assertions are worth exactly as
+    much as their ability to fail, so the rules as they stood when every model
+    failed mem-06 are reconstructed here and put through the same check.
+    """
+    shipped_before = (
+        "\nRegras de ferramentas:\n"
+        "- Usa ferramentas sempre que precisares de interagir com o sistema "
+        "operativo, ficheiros, web ou dispositivos.\n"
+        "- Ações destrutivas, alterações no sistema ou operações externas "
+        "sensíveis exigem confirmação através dos guardrails.\n"
+        "- Nunca inventes resultados de ferramentas nem fales de segredos de "
+        "sistema.\n"
+        "- Quando aprenderes preferências ou factos duradouros sobre o "
+        "utilizador, usa 'remember_fact'.\n"
+    )
+    assert "Antes de chamares uma ferramenta" not in shipped_before
+    assert "só conhece o que foi registado através dela" not in shipped_before
+
+    from core.brain import NANO_TOOL_RULES
+
+    assert "Antes de chamares uma ferramenta" in NANO_TOOL_RULES
+    # The unconditional encouragement that outranked the context is gone.
+    assert "sempre que precisares de interagir" not in NANO_TOOL_RULES
+
+
+def test_the_fact_is_in_the_prompt_at_the_distance_mem06_uses(stack):
+    """The diagnostic that decided the root cause, kept as a test.
+
+    mem-06 was reported as "every provider failed", which invites the
+    conclusion that Nano dropped the fact. It did not, and this is what proves
+    it: at exactly the distance the case uses, the sentence is still in the
+    verbatim window, so any fix aimed at retrieval, summarisation or the
+    composer would have been aimed at the wrong layer.
+    """
+    thread = stack.new_conversation()
+    stack.record_user_message("Tenho uma reunião com o Rui na quinta-feira às 15h.",
+                              conversation_id=thread["id"])
+    stack.record_assistant_message("Anotado: reunião com o Rui, quinta-feira às 15h.",
+                                   conversation_id=thread["id"])
+    stack.record_user_message("Boa, obrigado.", conversation_id=thread["id"])
+    stack.record_assistant_message("De nada.", conversation_id=thread["id"])
+
+    brain = _brain_with(stack)
+    brain.load_history(thread["id"])
+    verbatim = " ".join(str(m.get("content") or "") for m in brain.conversation)
+    assert "quinta-feira" in verbatim, "the fact left the verbatim window"
+
+
+def test_the_clause_that_carries_the_fix_is_still_there():
+    """Measured attribution, pinned so a tidy-up cannot quietly undo it.
+
+    On mem-06 against gemini-3.5-flash-lite: the shipped rules scored 0/4, the
+    context-first precondition WITHOUT this clause also scored 0/4, and adding
+    it scored 5/5. The precondition alone does nothing. What changes the answer
+    is telling the model that the lookup cannot settle the question, because
+    the lookup only ever knew what was written through it.
+
+    It reads like a restatement of the rule above it. It is not, and removing
+    it as redundant would restore the entire defect.
+    """
+    from core.brain import NANO_TOOL_RULES
+
+    assert "só conhece o que foi registado através dela" in NANO_TOOL_RULES
+    assert "nunca uses uma consulta vazia para negar um facto" in NANO_TOOL_RULES
+
+
+def test_an_unrequested_calendar_write_still_needs_confirmation():
+    """The residual failure mode must stay gated.
+
+    Told the calendar is empty, gpt-oss-20b sometimes answers by calling
+    calendar_add_event -- writing to the user's calendar off the back of a
+    question that asked for nothing of the sort. Nano's answer to that is not
+    the prompt: it is that the write cannot happen without the user saying yes.
+    A read stays free, or every "que reuniões tenho?" would need a prompt.
+    """
+    from core.guardrails import GuardrailsEngine
+
+    engine = GuardrailsEngine()
+    assert engine.requires_confirmation(
+        "calendar_add_event", {"title": "Reunião", "start": "2026-09-03T15:00"}) is True
+    assert engine.requires_confirmation("calendar_list_events", {"days": 7}) is False

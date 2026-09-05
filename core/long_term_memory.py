@@ -21,11 +21,23 @@ EXPLICIT VERSUS INFERRED
 partir de agora...", or a manual edit in the Memória page. Those are stored
 active, with high confidence, and they survive.
 
-``origin='inferred'`` means Nano noticed something that looks durable. Those
-enter as ``status='candidate'``: they are visible in the UI, they are NOT put
-into the model's context, and they only become active if the user promotes them.
-An assistant that quietly promotes its own guesses to facts is an assistant that
-will one day confidently tell you something you never said.
+``origin='inferred'`` means Nano noticed something that looks durable. What
+happens next depends on the evidence, and the decision is made in
+``core.memory_extraction``, not here:
+
+* strong evidence — a concrete category, a named entity, a stative first-person
+  verb — enters ``status='active'`` and is used from then on;
+* anything weaker enters ``status='candidate'``: visible in the UI, NOT put into
+  the model's context, active only if the user promotes it.
+
+The candidate tier is not a formality. An assistant that promotes EVERY guess is
+an assistant that will one day confidently tell you something you never said, so
+the threshold is high and the gap below it is wide.
+
+The store enforces one rule the extractor cannot: an inferred memory may promote
+a candidate it now has better evidence for, and may never touch an ARCHIVED row.
+Archiving is the user saying "stop using this"; an inference that undid it would
+be Nano overruling a decision it was told about.
 
 WHAT MEMORY CANNOT DO
 ---------------------
@@ -146,7 +158,20 @@ class LongTermMemory:
                     # Restating a fact makes it more certain, never less, and an
                     # explicit restatement promotes a candidate.
                     new_confidence = max(float(existing[2] or 0.0), float(score))
-                    new_status = "active" if origin != "inferred" else existing[3]
+                    # THE MERGE RULE, AND THE ONE THING IT MUST NOT DO.
+                    #
+                    # An automatic capture may promote a CANDIDATE it now has
+                    # strong evidence for -- that is the point of scoring. It
+                    # may not touch an ARCHIVED row: archiving is the user
+                    # saying "stop using this", and an inference that
+                    # resurrected it would be Nano overruling a decision it was
+                    # told about. Only the user, or an explicit request in their
+                    # own words, brings an archived memory back.
+                    new_status = existing[3]
+                    if origin != "inferred":
+                        new_status = "active"
+                    elif resolved_status == "active" and existing[3] == "candidate":
+                        new_status = "active"
                     self.conn.execute(
                         "UPDATE memories SET text=?, kind=?, confidence=?, importance=?,"
                         " status=?, updated_at=?, source_conversation_id=COALESCE(?, source_conversation_id),"

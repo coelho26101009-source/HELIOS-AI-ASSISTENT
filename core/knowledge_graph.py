@@ -56,11 +56,18 @@ NODE_TYPES: tuple[str, ...] = (
 #: Relation vocabulary. `related_to` is the honest default: inventing a specific
 #: relation from weak evidence is worse than admitting the connection is generic.
 RELATIONS: tuple[str, ...] = (
-    "related_to", "part_of", "uses", "prefers", "works_on",
+    "related_to", "part_of", "uses", "has", "prefers", "works_on",
     "decided", "mentioned_in", "depends_on",
 )
 
 DEFAULT_RELATION = "related_to"
+
+#: Relations whose direction carries meaning. A `uses` edge from A to B says
+#: something a `uses` edge from B to A does not, so those two are different
+#: edges. `related_to` and `mentioned_in` are symmetric, and storing both
+#: directions of a symmetric relation is how a graph grows two lines where the
+#: evidence supports one.
+SYMMETRIC_RELATIONS: frozenset[str] = frozenset({"related_to"})
 
 #: Ceilings for the graph endpoint. A view that cannot be drawn is not a view.
 MAX_GRAPH_NODES = 300
@@ -310,12 +317,33 @@ class KnowledgeGraph:
 
     def link(self, source_id: str, target_id: str, *, relation: str = DEFAULT_RELATION,
              weight: float = 1.0) -> dict:
-        """Connect two nodes. Self-links and dangling ends are refused."""
+        """Connect two nodes. Self-links and dangling ends are refused.
+
+        TWO RULES THAT KEEP THE EDGE SET HONEST, both enforced here so no caller
+        has to remember them.
+
+        1. A SYMMETRIC relation is stored in ONE canonical direction, chosen by
+           node id. Without this, "Groq e Ollama" and "Ollama e Groq" -- the same
+           fact said twice -- produce two edges between the same pair, and the
+           graph reports twice the connections it has evidence for.
+
+        2. A GENERIC relation never lands on top of a specific one. If the store
+           already knows "Projeto Nano --uses--> Ollama", a later co-occurrence
+           must not add "Projeto Nano --related_to--> Ollama" beside it: that is
+           the same fact, drawn twice, stated worse the second time. A specific
+           relation may still be added next to a generic one, because that is
+           new information arriving.
+        """
         if not source_id or not target_id or source_id == target_id:
             return {"ok": False, "error": "invalid_edge"}
         if self.get_node(source_id) is None or self.get_node(target_id) is None:
             return {"ok": False, "error": "unknown_node"}
         relation = relation if relation in RELATIONS else DEFAULT_RELATION
+        if relation in SYMMETRIC_RELATIONS and str(target_id) < str(source_id):
+            source_id, target_id = target_id, source_id
+        if relation == DEFAULT_RELATION and self._specific_edge_exists(source_id, target_id):
+            return {"ok": True, "source": source_id, "target": target_id,
+                    "relation": relation, "skipped": "already_specific"}
         stamp = _now()
         try:
             with self._lock:
@@ -331,6 +359,89 @@ class KnowledgeGraph:
             logger.exception("Falha a ligar %s -> %s", source_id, target_id)
             return {"ok": False, "error": "write_failed", "detail": str(exc)}
         return {"ok": True, "source": source_id, "target": target_id, "relation": relation}
+
+    def _specific_edge_exists(self, source_id: str, target_id: str) -> bool:
+        """Whether these two nodes are already joined by a NON-generic relation.
+
+        Direction-agnostic: "A uses B" already explains the pair, and adding
+        "B related_to A" would draw the same connection a second time from the
+        other end.
+        """
+        try:
+            with self._lock:
+                row = self.conn.execute(
+                    "SELECT 1 FROM knowledge_edges"
+                    " WHERE relation<>? AND ((source_id=? AND target_id=?)"
+                    "                     OR (source_id=? AND target_id=?)) LIMIT 1",
+                    (DEFAULT_RELATION, str(source_id), str(target_id),
+                     str(target_id), str(source_id))).fetchone()
+        except sqlite3.Error:
+            return False
+        return row is not None
+
+    def dedupe_symmetric_edges(self) -> int:
+        """Collapse mirrored copies of a symmetric relation onto one row.
+
+        WHY CANONICALISING NEW WRITES IS NOT ENOUGH. :meth:`link` now stores a
+        symmetric relation in one direction chosen by node id, so "Groq e
+        Ollama" and "Ollama e Groq" can no longer become two edges. That rule
+        only governs writes made from now on, and a database written by an
+        earlier build already holds both rows -- so the install that actually
+        has the problem is the only one the rule does not help. It is the same
+        gap ``MemoryStack.reconcile_knowledge`` exists to close for nodes.
+
+        NOTHING IS LOST. The two rows assert the identical fact about the
+        identical pair; one of them is a second drawing of the first. The
+        surviving row keeps the HIGHER of the two weights rather than their
+        sum: weight is evidence counted by repetition, and a pair that was
+        counted twice because it was stored twice has not been mentioned twice.
+
+        A row that is merely pointing the wrong way, with no twin, is turned
+        round rather than deleted.
+
+        Returns how many rows were removed, so a caller can log a measured
+        number instead of announcing a cleanup it did not verify.
+        """
+        if not SYMMETRIC_RELATIONS:
+            return 0
+        placeholders = ",".join("?" * len(SYMMETRIC_RELATIONS))
+        removed = 0
+        try:
+            with self._lock:
+                rows = self.conn.execute(
+                    "SELECT id, source_id, target_id, relation, weight"
+                    f" FROM knowledge_edges WHERE relation IN ({placeholders})",
+                    tuple(sorted(SYMMETRIC_RELATIONS))).fetchall()
+                groups: dict[tuple[str, str, str], list] = {}
+                for row in rows:
+                    left, right = str(row[1]), str(row[2])
+                    key = (min(left, right), max(left, right), str(row[3]))
+                    groups.setdefault(key, []).append(row)
+
+                stamp = _now()
+                for (left, right, _relation), members in groups.items():
+                    # Delete the extra rows FIRST: the surviving row is about to
+                    # take the canonical direction, which would collide with a
+                    # twin still holding it.
+                    keeper = next((m for m in members if str(m[1]) == left), members[0])
+                    for member in members:
+                        if member[0] != keeper[0]:
+                            self.conn.execute(
+                                "DELETE FROM knowledge_edges WHERE id=?", (member[0],))
+                            removed += 1
+                    weight = max(float(member[4] or 0.0) for member in members)
+                    if len(members) > 1 or str(keeper[1]) != left:
+                        self.conn.execute(
+                            "UPDATE knowledge_edges SET source_id=?, target_id=?,"
+                            " weight=?, updated_at=? WHERE id=?",
+                            (left, right, weight, stamp, keeper[0]))
+                self.conn.commit()
+        except sqlite3.Error:
+            logger.exception("Falha a colapsar ligações simétricas duplicadas")
+            return 0
+        if removed:
+            logger.info("Second Brain: %d ligação(ões) duplicada(s) colapsada(s)", removed)
+        return removed
 
     def unlink(self, source_id: str, target_id: str, relation: str | None = None) -> dict:
         params: list = [str(source_id), str(target_id)]

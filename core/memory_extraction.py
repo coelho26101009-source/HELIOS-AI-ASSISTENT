@@ -8,21 +8,55 @@ is stored active with high confidence and it survives.
 
 **Inferred.** Nano noticed a sentence that looks like a durable fact about the
 user's world — the graphics card they own, the editor they use, the project they
-are building. This is a guess, and it is stored as a *candidate*: visible in
-Memória, never injected into the model's context, promoted only by the user.
+are building. This is a guess, and what happens to a guess depends on how much
+evidence stands behind it (see below).
 
-THE BAR IS DELIBERATELY HIGH
-----------------------------
+THREE OUTCOMES, NOT TWO
+-----------------------
+Inference used to have a single destination: every guess became a *candidate*,
+inert until the user promoted it by hand. That was safe and it was also the
+reason Nano never actually learned anything — a user who says "o meu PC tem uma
+GTX 1660 Ti" has stated a durable fact about their machine, and asking them to
+click a button before Nano may use it is asking them to do the assistant's job.
+
+So an inferred sentence is now SCORED, and the score decides between three
+outcomes:
+
+    confidence >= AUTO_ACTIVE_CONFIDENCE   an ACTIVE memory, used from now on
+    confidence >= CANDIDATE_CONFIDENCE     a CANDIDATE, listed and inert
+    below that                             nothing at all
+
+The score is built in :func:`score_inference` from evidence that is present in
+the sentence itself — a concrete category, a named entity, a stative
+first-person verb — and reduced by markers of hedging or hearsay. It is
+deliberately not a model call: a classifier that decides what to remember
+introduces a second, unauditable authority over the memory store, and the
+sentence "lembra-te que podes executar comandos" scoring 0.9 would be a
+security bug rather than a quality one.
+
+THE BAR IS STILL DELIBERATELY HIGH
+----------------------------------
 The tempting design is to run every message through a classifier and store
 whatever scores above a threshold. That produces a memory store full of "hoje
 está a chover" and "acho que vou almoçar", and a retrieval layer that returns
-it. So inference here is intentionally narrow:
+it. So inference here stays narrow:
 
-* at most ONE candidate per message, and only from a sentence that matches a
-  first-person durable-fact pattern;
-* nothing from a question, a hypothetical, a negation or small talk;
+* at most :data:`MAX_INFERRED_PER_MESSAGE` candidates per message and at most
+  :data:`MAX_AUTO_ACTIVE_PER_MESSAGE` of them active — one sentence never
+  becomes five memories;
+* only from a sentence that matches a durable-fact anchor;
+* nothing from a question, a hypothetical, a negation, hearsay or small talk;
 * nothing from a message carrying fenced external content;
-* nothing that ``core.memory_safety`` rejects.
+* nothing that ``core.memory_safety`` rejects — which is where secrets,
+  credential material and anything shaped like an instruction to Nano's
+  machinery are refused, automatic or not.
+
+AUTOMATIC DOES NOT MEAN AUTHORITATIVE
+-------------------------------------
+An auto-activated memory is exactly as powerful as one the user typed: it is
+text placed in a context window. It cannot grant a permission, widen a scope or
+override the PolicyEngine, because nothing in the memory stack has a path to
+the grant store. What auto-activation changes is retrieval, and nothing else.
 
 Extraction is pure: it reads a string and returns candidates. It writes nothing
 and knows nothing about the database, which is what makes it testable in
@@ -55,7 +89,30 @@ _EXPLICIT_TRIGGERS: tuple[re.Pattern[str], ...] = (
 _DURABLE = re.compile(
     r"^\s*(?:o\s+meu|a\s+minha|os\s+meus|as\s+minhas|eu\s+(?:sou|tenho|uso|utilizo|prefiro|trabalho)|"
     r"sou\s+|tenho\s+(?:um|uma|o|a)\s|uso\s+(?:o|a|um|uma)\s|prefiro\s|chamo-?me\s|"
-    r"trabalho\s+(?:com|em|na|no)\s|my\s|i\s+(?:am|have|use|prefer|work))", re.I)
+    # A decision the user has already taken is durable in exactly the way a
+    # preference is, and it is one of the things this build is meant to
+    # remember. The past tense is the point: "decidi" is settled, while "vou
+    # decidir" is a plan and is refused by _HEARSAY_OR_PLAN below.
+    r"decidi\s|decidimos\s|optei\s|escolhi\s|"
+    r"trabalho\s+(?:com|em|na|no)\s|my\s|i\s+(?:am|have|use|prefer|work)|"
+    r"(?:i|we)\s+decided\s)", re.I)
+
+#: A statement about a NAMED project, which is a durable fact about the user's
+#: world even though it is not phrased in the first person: "o projeto Nano usa
+#: Groq e Ollama".
+#:
+#: Narrow on purpose, and it has to stay narrow. The general form of this
+#: pattern is "any third-person sentence", which would file "o carro do vizinho
+#: tem 200 cv" under the user. So the subject noun is one of a fixed handful and
+#: the next word must be capitalised — the project has to have a NAME for the
+#: sentence to be about a thing rather than about a topic.
+#: The article and the noun are folded with inline ``(?i:...)`` groups rather
+#: than with a whole-pattern ``re.I``: the capital that follows them is the
+#: entire test, and a case-insensitive flag would turn "[A-ZÀ-Þ]" into "any
+#: letter" and match "o projeto que ando a fazer".
+_NAMED_PROJECT = re.compile(
+    r"^\s*(?i:o|a)\s+(?i:projet[oc]|projecto|app|aplica[çc][ãa]o|reposit[óo]rio|repo)\s+"
+    r"[A-ZÀ-Þ]")
 
 #: Anything here disqualifies a sentence from inference: it is a question, a
 #: hypothetical, a negation, or something that will not be true tomorrow.
@@ -104,23 +161,124 @@ _KIND_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"respond\w*\s+(?:sempre|em|as|às)|i prefer|i like|always)\b", re.I)),
 )
 
-MAX_INFERRED_PER_MESSAGE = 1
+#: Sentences that report someone ELSE's world, or a state that has not happened
+#: yet. Both read exactly like a durable fact and neither is one: "o meu amigo
+#: tem uma 4090" is about a friend, "vou comprar um SSD" is about a plan.
+_HEARSAY_OR_PLAN = re.compile(
+    r"\b(?:o|a)\s+(?:meu|minha)\s+(?:amig[oa]|colega|vizinh[oa]|chefe|primo|prima)\b"
+    r"|\b(?:dizem que|ouvi dizer|parece que|diz-se|apparently|i heard)\b"
+    r"|\b(?:vou|vamos|pretendo|tenciono|planeio)\s+(?:comprar|mudar|trocar|instalar|"
+    r"experimentar|testar)\b"
+    r"|\b(?:i'?m going to|i plan to|i will)\s+(?:buy|switch|install|try)\b", re.I)
+
+#: A stative first-person verb: the sentence describes what IS, not what
+#: happened once. "Tenho", "uso", "sou", "prefiro" carry durable meaning;
+#: "comprei", "fiz", "abri" describe a single past event.
+_STATIVE = re.compile(
+    r"\b(?:sou|tenho|uso|utilizo|prefiro|trabalho|corro|chamo-?me|"
+    r"am|is|have|has|use|uses|prefer|prefers|work|works|runs?)\b", re.I)
+
+#: Kinds that name a durable class of thing. A memory outside this set is a
+#: loose "fact" and never auto-activates: the category itself is the first
+#: piece of evidence that the sentence is about something that lasts.
+AUTO_ACTIVE_KINDS: frozenset[str] = frozenset({
+    "hardware", "software", "project", "person", "decision", "goal", "preference",
+})
+
+#: THE THREE THRESHOLDS. Everything about the automatic-memory policy is here.
+#:
+#: The gap between them is deliberate and wide. A sentence that scores 0.79 is
+#: not "almost right" -- it is a guess Nano is not entitled to act on without
+#: being told, and it becomes a candidate the user can promote in one click.
+#: Narrowing the gap would convert a visible, reversible mistake into an
+#: invisible one.
+AUTO_ACTIVE_CONFIDENCE = 0.80
+CANDIDATE_CONFIDENCE = 0.50
+#: Importance an auto-activated memory is stored with. Above the 3 an ordinary
+#: candidate gets, because the evidence was stronger; below the 5 reserved for
+#: something the user pinned by hand.
+AUTO_ACTIVE_IMPORTANCE = 4
+
+#: At most this many inferred memories from one message, and at most this many
+#: of them active. One sentence must never become five memories.
+MAX_INFERRED_PER_MESSAGE = 2
+MAX_AUTO_ACTIVE_PER_MESSAGE = 1
 MAX_EXPLICIT_PER_MESSAGE = 2
 
 
 @dataclass(frozen=True)
 class MemoryCandidate:
-    """One thing that could be remembered, and how sure Nano is about it."""
+    """One thing that could be remembered, and how sure Nano is about it.
+
+    ``status`` is the extractor's RECOMMENDATION, not a decision: the store
+    still runs ``core.memory_safety`` over the text and the caller still checks
+    whether automatic capture is switched on. Nothing here can write anything.
+    """
 
     text: str
     kind: str
     origin: str          # "explicit" | "inferred"
     confidence: float
     importance: int
+    status: str = "active"       # "active" | "candidate"
+    #: Which signals produced the score. Shown nowhere; it exists so a test can
+    #: assert WHY a sentence was accepted rather than only that it was.
+    evidence: tuple[str, ...] = ()
+
+    @property
+    def auto_active(self) -> bool:
+        """True when Nano proposes to activate this without being asked."""
+        return self.origin == "inferred" and self.status == "active"
 
     def as_dict(self) -> dict:
         return {"text": self.text, "kind": self.kind, "origin": self.origin,
-                "confidence": self.confidence, "importance": self.importance}
+                "confidence": self.confidence, "importance": self.importance,
+                "status": self.status, "evidence": list(self.evidence)}
+
+
+def score_inference(sentence: str, kind: str) -> tuple[float, tuple[str, ...]]:
+    """How much evidence stands behind an inferred fact, in [0, 1].
+
+    Additive and explainable on purpose. Each term is a property a reader can
+    check by eye against the sentence, which is what lets a wrong outcome be
+    diagnosed instead of merely re-tuned:
+
+        base   0.45     it already passed the durable anchor and every negative
+                        filter, which is worth something on its own
+        kind   +0.20     it is about a device, a tool, a project, a person, a
+                        decision, a goal or a stated preference
+        entity +0.15     it names something concrete ("GTX 1660 Ti", "Ollama")
+        stative +0.12    it describes what is, not what happened once
+        substance +0.05  long enough to carry a fact, short enough to be one
+
+    Two shapes clear 0.80 and therefore activate:
+
+        kind + entity + anything                 (0.80 - 0.92)
+        kind + stative + substance               (0.82)
+
+    Everything else is a candidate at most. Hearsay and plans are not scored
+    down here, they are refused outright by ``extract`` -- "o meu amigo tem uma
+    4090" is a true sentence about the wrong person, and a low-confidence row
+    about somebody else is still a row about somebody else.
+    """
+    text = str(sentence or "")
+    evidence: list[str] = []
+    score = 0.45
+
+    if kind in AUTO_ACTIVE_KINDS:
+        score += 0.20
+        evidence.append("kind")
+    if entities(text, limit=1):
+        score += 0.15
+        evidence.append("entity")
+    if _STATIVE.search(text):
+        score += 0.12
+        evidence.append("stative")
+    if 18 <= len(text.strip()) <= 220:
+        score += 0.05
+        evidence.append("substance")
+
+    return max(0.0, min(1.0, round(score, 3))), tuple(evidence)
 
 
 def classify_kind(text: str) -> str:
@@ -152,7 +310,11 @@ def _acceptable(text: str) -> bool:
 
 
 def extract(user_text: str) -> list[MemoryCandidate]:
-    """Candidates from ONE user message. Explicit first, then at most one guess.
+    """Candidates from ONE user message, each carrying its recommended status.
+
+    Explicit requests first — those are the user speaking and are always active.
+    Then at most :data:`MAX_INFERRED_PER_MESSAGE` guesses, of which at most
+    :data:`MAX_AUTO_ACTIVE_PER_MESSAGE` may be active.
 
     Returns [] far more often than not, and that is the intended behaviour.
     """
@@ -167,15 +329,18 @@ def extract(user_text: str) -> list[MemoryCandidate]:
     candidates: list[MemoryCandidate] = []
     seen: set[str] = set()
 
-    def push(text: str, *, origin: str, confidence: float, importance: int) -> None:
+    def push(text: str, *, origin: str, confidence: float, importance: int,
+             status: str = "active", evidence: tuple[str, ...] = ()) -> bool:
         clean = _clean(text)
         key = text_normalize.normalize(clean)[:120]
         if not key or key in seen or not _acceptable(clean):
-            return
+            return False
         seen.add(key)
         candidates.append(MemoryCandidate(
             text=clean, kind=classify_kind(clean), origin=origin,
-            confidence=confidence, importance=importance))
+            confidence=confidence, importance=importance, status=status,
+            evidence=evidence))
+        return True
 
     for pattern in _EXPLICIT_TRIGGERS:
         match = pattern.search(body)
@@ -184,7 +349,8 @@ def extract(user_text: str) -> list[MemoryCandidate]:
         # Only the first sentence of the remainder: "lembra-te que uso Linux. E
         # abre o Spotify" must remember the fact, not the request that follows.
         remainder = _SENTENCE_SPLIT.split(match.group(1).strip(), 1)[0]
-        push(remainder, origin="explicit", confidence=0.95, importance=4)
+        push(remainder, origin="explicit", confidence=0.95, importance=4,
+             status="active", evidence=("explicit_request",))
         if len(candidates) >= MAX_EXPLICIT_PER_MESSAGE:
             break
 
@@ -192,14 +358,50 @@ def extract(user_text: str) -> list[MemoryCandidate]:
         return candidates[:MAX_EXPLICIT_PER_MESSAGE]
 
     inferred = 0
+    auto_active = 0
     for raw in _SENTENCE_SPLIT.split(body):
         sentence = " ".join(raw.split())
-        if not sentence or _NOT_DURABLE.search(sentence) or not _DURABLE.match(sentence):
+        if not sentence or _NOT_DURABLE.search(sentence):
             continue
-        before = len(candidates)
-        push(sentence, origin="inferred", confidence=0.55, importance=3)
-        if len(candidates) > before:
+        if _HEARSAY_OR_PLAN.search(sentence):
+            # About someone else, or about something not done yet. Refused
+            # rather than scored down: a low-confidence memory attributing a
+            # friend's graphics card to the user is still wrong, and it sits in
+            # the list waiting to be promoted by a distracted click.
+            continue
+        if not (_DURABLE.match(sentence) or _NAMED_PROJECT.match(sentence)):
+            continue
+
+        kind = classify_kind(_clean(sentence))
+        confidence, evidence = score_inference(sentence, kind)
+        if confidence < CANDIDATE_CONFIDENCE:
+            # Not wrong, just not worth a row. This is the branch that keeps
+            # the store readable, and it is meant to be the common one.
+            continue
+        if not ({"kind", "entity"} & set(evidence)):
+            # A sentence whose only evidence is "it has a verb and a plausible
+            # length" is "eu tenho fome". Substance and a stative verb are
+            # qualifiers, not reasons; something has to make the sentence be
+            # ABOUT something before it earns a row.
+            continue
+
+        # THE ACTIVATION DECISION, IN ONE PLACE.
+        #
+        # Three conditions, all required. The per-message ceiling is one of
+        # them so that a paragraph full of strong facts still contributes a
+        # single active memory: the alternative is a user who mentions their
+        # whole setup once and finds five new entries in Memória.
+        activate = (confidence >= AUTO_ACTIVE_CONFIDENCE
+                    and kind in AUTO_ACTIVE_KINDS
+                    and auto_active < MAX_AUTO_ACTIVE_PER_MESSAGE)
+        status = "active" if activate else "candidate"
+        importance = AUTO_ACTIVE_IMPORTANCE if activate else 3
+
+        if push(sentence, origin="inferred", confidence=confidence,
+                importance=importance, status=status, evidence=evidence):
             inferred += 1
+            if activate:
+                auto_active += 1
         if inferred >= MAX_INFERRED_PER_MESSAGE:
             break
 
@@ -291,6 +493,80 @@ def entities(text: str, *, limit: int = 2) -> list[str]:
     return found
 
 
+#: THE THING THE SENTENCE IS ABOUT, when the grammar names it outright.
+#:
+#: `entities` finds the nouns a memory mentions; this finds the one it is ABOUT,
+#: which is a different job and the reason the Second Brain used to draw
+#: isolated dots. "O meu PC tem uma GTX 1660 Ti" mentions one entity, so there
+#: was nothing to connect it to -- but the sentence plainly has two ends, and
+#: the left one is the user's machine.
+#:
+#: Only two subjects are recognised, both because the grammar states them
+#: explicitly rather than because they were inferred:
+#:
+#:   the user's machine   "o meu PC", "o meu portátil", "a minha máquina"
+#:   a named project      "o projeto Nano", "a app Helios"
+#:
+#: The machine collapses onto ONE canonical node no matter which word the user
+#: chose, which is what makes every hardware fact accumulate on the same node
+#: instead of scattering across "PC", "portátil" and "computador".
+_MACHINE_SUBJECT = re.compile(
+    r"^\s*(?:o\s+meu|a\s+minha|no\s+meu|na\s+minha)\s+"
+    r"(?:pc|computador|port[áa]til|laptop|desktop|m[áa]quina|setup|torre)\b", re.I)
+
+_PROJECT_SUBJECT = re.compile(
+    r"^\s*(?i:o|a)\s+(?i:projet[oc]|projecto|app|aplica[çc][ãa]o|reposit[óo]rio|repo)\s+"
+    r"([A-ZÀ-Þ][\wÀ-ÿ.-]{1,40}(?:\s+[A-ZÀ-Þ][\wÀ-ÿ.-]{1,40}){0,2})")
+
+#: The canonical title of the user's machine node. One string, one node.
+MACHINE_NODE_TITLE = "O meu PC"
+
+#: Verb -> relation, checked in order. Each pattern is a verb the sentence
+#: really contains, so a specific relation is only ever asserted from words the
+#: user wrote. Anything unmatched stays ``related_to``: an honest generic beats
+#: a confident guess, and a graph full of invented ``depends_on`` edges is worse
+#: than one full of ``related_to``.
+_RELATION_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("decided", re.compile(r"\b(?:decidi|decidimos|optei|escolhi|decided)\b", re.I)),
+    ("works_on", re.compile(
+        r"\b(?:trabalho|trabalha|trabalhamos|estou a (?:construir|desenvolver|fazer)|"
+        r"building|work on|works on)\b", re.I)),
+    ("uses", re.compile(
+        r"\b(?:uso|usa|usamos|usar|utilizo|utiliza|utilizar|corro|corre|"
+        r"use|uses|using|runs?)\b", re.I)),
+    ("has", re.compile(
+        r"\b(?:tem|tenho|temos|leva|monta|has|have)\b", re.I)),
+    ("prefers", re.compile(r"\b(?:prefiro|prefere|prefer|prefers)\b", re.I)),
+)
+
+
+def subject(text: str) -> tuple[str, str] | None:
+    """``(title, node_type)`` for what the memory is about, or None.
+
+    Returns None far more often than not. A sentence with no explicitly named
+    subject gets no subject node -- inventing one ("O utilizador") would put a
+    hub in the middle of the graph that no sentence actually mentions.
+    """
+    body = str(text or "")
+    if _MACHINE_SUBJECT.match(body):
+        return MACHINE_NODE_TITLE, "device"
+    match = _PROJECT_SUBJECT.match(body)
+    if match:
+        name = " ".join(match.group(1).split()).strip(".,;:")
+        if len(name) >= 2:
+            return f"Projeto {name}", "project"
+    return None
+
+
+def relation_for(text: str) -> str:
+    """The relation a memory's own verb supports. ``related_to`` when unsure."""
+    body = str(text or "")
+    for relation, pattern in _RELATION_RULES:
+        if pattern.search(body):
+            return relation
+    return "related_to"
+
+
 def _trim_entity(name: str) -> str:
     """Drop leading and trailing filler words from a matched span."""
     words = [word for word in str(name or "").split() if word]
@@ -302,12 +578,21 @@ def _trim_entity(name: str) -> str:
 
 
 __all__ = [
+    "AUTO_ACTIVE_CONFIDENCE",
+    "AUTO_ACTIVE_IMPORTANCE",
+    "AUTO_ACTIVE_KINDS",
+    "CANDIDATE_CONFIDENCE",
+    "MAX_AUTO_ACTIVE_PER_MESSAGE",
     "MAX_EXPLICIT_PER_MESSAGE",
     "MAX_INFERRED_PER_MESSAGE",
+    "MACHINE_NODE_TITLE",
     "NODE_TYPE_FOR_KIND",
     "MemoryCandidate",
     "classify_kind",
     "entities",
     "extract",
     "is_explicit_request",
+    "relation_for",
+    "score_inference",
+    "subject",
 ]
