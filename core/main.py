@@ -311,14 +311,40 @@ def send_message(user_text: str, msg_id: str | None = None) -> dict:
 
     A transport failure (no ACK at all) and a model failure (ACK, then an error
     on the stream) are therefore distinguishable by the UI.
+
+    THE THREAD THAT STARTS A TURN OWNS THE WHOLE TURN. The owning conversation
+    is resolved HERE, synchronously, on the bridge thread -- at the instant the
+    user pressed Enter -- and travels with the turn. It is not looked up again
+    when the answer finishes.
+
+    Resolving it later was a real defect. The answer is produced on the event
+    loop, but the rail (`open_conversation`, `create_conversation`) runs on the
+    bridge thread and moves the active pointer whenever the user clicks. A user
+    who sent a message and then opened another thread had the reply written
+    into whichever conversation happened to be active when the stream ended --
+    or, if the click landed before the coroutine got its first slice, the
+    QUESTION went there too and the original thread kept nothing at all.
     """
     if not user_text or not user_text.strip():
         return {"ok": False, "accepted": False, "error": "empty_message"}
     request_id = msg_id or uuid.uuid4().hex
+    # Resolving the owner must never be able to cost the user their message.
+    # This runs on the bridge thread and touches SQLite, so a locked or failing
+    # database would otherwise raise straight through the eel bridge: no ACK,
+    # and a UI reporting "Motor offline" while the model was perfectly healthy.
+    # Degrading to None restores exactly the previous behaviour -- the turn is
+    # filed against the active thread -- which is a far smaller loss than
+    # dropping the turn.
+    owner: str | None = None
+    try:
+        if memory_stack.ready:
+            owner = memory_stack.ensure_active()
+    except Exception:
+        logger.exception("Não foi possível determinar a conversa da mensagem")
     try:
         loop = _get_or_create_loop()
         asyncio.run_coroutine_threadsafe(
-            _process_message(user_text, msg_id=request_id), loop
+            _process_message(user_text, msg_id=request_id, conversation_id=owner), loop
         )
     except Exception:
         logger.exception("Não foi possível aceitar a mensagem")
@@ -2490,12 +2516,18 @@ def _emit_voice_exchange(turn_id: str, user_text: str, assistant_text: str):
     """
     if memory_stack.ready:
         try:
-            memory_stack.record_user_message(user_text, metadata={"source": "voice"})
+            # ONE owner for the whole spoken turn, resolved once. Both halves go
+            # to the same thread even if the rail moved the active pointer
+            # between them -- a spoken question and its answer must not end up
+            # in two different conversations.
+            owner = memory_stack.ensure_active()
+            memory_stack.record_user_message(user_text, conversation_id=owner,
+                                             metadata={"source": "voice"})
             # A spoken answer came from a provider too, and reopening the thread
             # must say which one. Same allow-list as the typed path -- there is
             # no second definition of "safe metadata".
             memory_stack.record_assistant_message(
-                assistant_text,
+                assistant_text, conversation_id=owner,
                 metadata={"source": "voice",
                           **response_meta.for_message(getattr(brain, "last_metadata", {}))})
         except Exception:
@@ -2917,18 +2949,28 @@ def _should_speak(source: str) -> bool:
 
 
 async def _process_message(user_text: str, msg_id: str | None = None,
-                           blocking_tts: bool = False, source: str = "text") -> dict:
+                           blocking_tts: bool = False, source: str = "text",
+                           conversation_id: str | None = None) -> dict:
     if not msg_id:
         msg_id = uuid.uuid4().hex
     try:
-        # ONE funnel for persistence. The stack writes into the active thread,
-        # keeps the retrieval index in step, and defers summarisation and memory
-        # extraction to its own worker so none of it sits between Enter and the
-        # first token. memory.save_message stays as the fallback for a database
-        # that failed to migrate -- losing the log entirely would be worse than
-        # losing threads.
+        # ONE funnel for persistence. The stack writes into the thread that OWNS
+        # this turn, keeps the retrieval index in step, and defers summarisation
+        # and memory extraction to its own worker so none of it sits between
+        # Enter and the first token. memory.save_message stays as the fallback
+        # for a database that failed to migrate -- losing the log entirely would
+        # be worse than losing threads.
+        #
+        # `conversation_id` is normally supplied by send_message, which resolved
+        # it the moment the user pressed Enter. Resolving it here as well covers
+        # callers that dispatch a turn directly; either way it is resolved ONCE
+        # and both halves of the turn use that same value. Looking the active
+        # thread up again after the stream finished is what let a reply land in
+        # a conversation the user had merely switched to in the meantime.
+        owner = conversation_id or (memory_stack.ensure_active()
+                                    if memory_stack.ready else None)
         if memory_stack.ready:
-            memory_stack.record_user_message(user_text)
+            memory_stack.record_user_message(user_text, conversation_id=owner)
         else:
             memory.save_message("user", user_text)
         _emit_stream_start(msg_id, user_text)
@@ -2962,7 +3004,13 @@ async def _process_message(user_text: str, msg_id: str | None = None,
         # makes the panel identical before and after the thread is reopened.
         safe_meta = response_meta.for_message(getattr(brain, "last_metadata", {}))
         if memory_stack.ready:
-            memory_stack.record_assistant_message(full_response, metadata=safe_meta)
+            # The SAME owner the question was written to. If that thread was
+            # deleted while the answer was streaming the store drops this row
+            # (see ConversationStore.append) -- which is correct: the answer was
+            # already delivered on screen, and it must not reappear inside some
+            # other conversation the user is now reading.
+            memory_stack.record_assistant_message(
+                full_response, conversation_id=owner, metadata=safe_meta)
         else:
             memory.save_message("assistant", full_response)
         result = {
