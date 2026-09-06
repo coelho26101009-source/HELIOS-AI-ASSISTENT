@@ -40,7 +40,7 @@ import logging
 import sqlite3
 import threading
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Sequence
 
 from core import text_normalize
 from core.memory_schema import new_id, title_from_text
@@ -264,6 +264,51 @@ class ConversationStore:
                     conversation_id, removed_messages, removed_index)
         return {"ok": True, "id": conversation_id, "messages": removed_messages,
                 "indexEntries": removed_index}
+
+    def delete_many(self, conversation_ids: Sequence[str]) -> dict:
+        """Delete several threads, reporting exactly what happened to each.
+
+        BEST-EFFORT, AND IT SAYS SO. Each thread is deleted through the same
+        :meth:`delete` as a single one, so summaries, thread facts, knowledge
+        links and retrieval-index rows are cleaned identically -- there is no
+        second, faster deletion path that could forget one of them.
+
+        The alternative, one transaction around the whole batch, would make a
+        single unreadable row abort a delete of forty. So a failure is recorded
+        per id and returned: the caller can tell the user "37 apagadas, 3
+        falharam" instead of a lie in either direction. Reporting "done" for a
+        batch that partly failed is the specific outcome this shape exists to
+        prevent.
+
+        The list is bounded because it arrives from the renderer.
+        """
+        ids: list[str] = []
+        for raw in list(conversation_ids or [])[:MAX_LIST_LIMIT]:
+            value = str(raw or "").strip()
+            if value and value not in ids:
+                ids.append(value)
+        if not ids:
+            return {"ok": False, "error": "no_conversations", "removed": 0,
+                    "deleted": [], "failed": []}
+
+        deleted: list[str] = []
+        failed: list[dict] = []
+        messages = 0
+        index_entries = 0
+        for conversation_id in ids:
+            result = self.delete(conversation_id)
+            if result.get("ok"):
+                deleted.append(conversation_id)
+                messages += int(result.get("messages") or 0)
+                index_entries += int(result.get("indexEntries") or 0)
+            else:
+                failed.append({"id": conversation_id,
+                               "error": str(result.get("error") or "delete_failed")})
+        logger.info("Apagadas %d de %d conversas (%d mensagens)",
+                    len(deleted), len(ids), messages)
+        return {"ok": not failed, "removed": len(deleted), "requested": len(ids),
+                "deleted": deleted, "failed": failed, "messages": messages,
+                "indexEntries": index_entries}
 
     def delete_all(self) -> dict:
         """Clear every conversation. Long-term memories are untouched."""

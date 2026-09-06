@@ -761,6 +761,35 @@ def delete_conversation(conversation_id: str) -> dict:
 
 
 @eel.expose
+def delete_conversations(conversation_ids: list) -> dict:
+    """Delete several threads in one confirmed action.
+
+    ONE NARROW OPERATION, NOT A GENERIC ENDPOINT. It takes a list of thread ids
+    and nothing else: no table name, no filter, no "delete where". The renderer
+    is the least trusted process in Nano and the set of things it can ask for
+    has to stay finite and readable.
+
+    It exists because the alternative was forty independent `delete_conversation`
+    calls from the browser: forty round trips, forty chances to be interrupted
+    half way, and no way for the UI to report what actually happened. Here the
+    backend performs the batch and returns per-id outcomes, so a partial failure
+    is reported as a partial failure rather than shown as success.
+    """
+    if not memory_stack.ready:
+        return {"ok": False, "error": "memory_unavailable", "removed": 0}
+    if not isinstance(conversation_ids, (list, tuple)):
+        return {"ok": False, "error": "invalid_request", "removed": 0}
+    was_active = memory_stack.active_conversation_id
+    result = memory_stack.delete_conversations([str(value) for value in conversation_ids])
+    if was_active and was_active in (result.get("deleted") or []):
+        # The Brain was holding one of these. Move it somewhere real before the
+        # next message is answered against a thread that no longer exists.
+        brain.switch_conversation(memory_stack.ensure_active())
+    result["activeId"] = memory_stack.active_conversation_id
+    return result
+
+
+@eel.expose
 def get_conversation_context(conversation_id: str = "") -> dict:
     """What memory would contribute to the next message in this thread.
 

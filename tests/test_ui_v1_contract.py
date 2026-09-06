@@ -373,12 +373,67 @@ def test_the_cleaner_is_applied_where_the_message_is_rendered():
 
 # ============================================== honest controls and states
 
+def _jsx_opening_tags(code: str, element: str) -> list[str]:
+    """Every `<element ...>` opening tag, with its props intact.
+
+    WHY NOT `<button[^>]*>`. That expression ends the tag at the first ">" in
+    the source, and an arrow function in a prop contains one:
+
+        <button disabled={!n} onClick={() => go()} title="porquê" >
+                                             ^ the regex stops here
+
+    so every prop after the first handler became invisible. A button carrying a
+    perfectly good `title` therefore read as unexplained, which is a test that
+    fails for a reason that has nothing to do with the product. This walks the
+    tag instead, tracking brace depth and string literals, and ends it at the
+    first ">" that is actually outside an expression.
+    """
+    tags: list[str] = []
+    for match in re.finditer(rf"<{element}\b", code):
+        depth = 0
+        quote = ""
+        index = match.end()
+        while index < len(code):
+            char = code[index]
+            if quote:
+                if char == "\\":
+                    index += 2
+                    continue
+                if char == quote:
+                    quote = ""
+            elif char in "\"'`":
+                quote = char
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+            elif char == ">" and depth == 0:
+                tags.append(code[match.start():index + 1])
+                break
+            index += 1
+    return tags
+
+
+def test_the_jsx_tag_scanner_reads_past_an_arrow_function():
+    """The scanner above is load-bearing for the next test, so it is checked.
+
+    A helper that silently truncated its input would make the assertion it
+    feeds pass for the wrong reason, which is worse than no assertion at all.
+    """
+    sample = '<button disabled={!n} onClick={() => go(a > b)} title="porquê">x</button>'
+    tags = _jsx_opening_tags(sample, "button")
+    assert len(tags) == 1
+    assert 'title="porquê"' in tags[0]
+    assert tags[0].endswith(">") and "x</button>" not in tags[0]
+
+
 def test_every_disabled_control_explains_itself():
     """A control that does nothing must say so, not fail silently."""
     for path in _tsx_files():
         code = _strip_comments(_read(path))
-        for match in re.finditer(r"<button[^>]*\bdisabled\b[^>]*>", code, re.S):
-            tag = match.group(0)
+        for tag in _jsx_opening_tags(code, "button"):
+            if not re.search(r"\bdisabled\b", tag):
+                continue
             has_reason = "title=" in tag or "aria-label=" in tag or "aria-disabled" in tag
             assert has_reason, f"{path.name} has a disabled button with no explanation: {tag[:90]}"
 

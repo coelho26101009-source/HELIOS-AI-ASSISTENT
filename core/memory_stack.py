@@ -270,6 +270,29 @@ class MemoryStack:
         self.knowledge.prune_links("conversation", [str(conversation_id)])
         return result
 
+    def delete_conversations(self, conversation_ids: list[str]) -> dict:
+        """Delete several threads in one operation. See ConversationStore.delete_many.
+
+        The facade adds the two things the store cannot know about: the links
+        from Second Brain nodes back into those threads, pruned in ONE pass
+        rather than per id, and the active-thread pointer, which has to be
+        released if the conversation the Brain is holding was in the batch.
+
+        Long-term memories that originated in these threads survive, exactly as
+        they do for a single delete. That lifecycle rule is not relaxed because
+        more rows were selected: a memory is a separate object with its own row
+        in Memória and its own delete.
+        """
+        if not self.ready:
+            return {"ok": False, "error": "memory_unavailable", "removed": 0}
+        result = self.conversations.delete_many(conversation_ids)
+        deleted = [str(value) for value in result.get("deleted") or []]
+        if deleted:
+            self.knowledge.prune_links("conversation", deleted)
+        if self._active_id in deleted:
+            self._active_id = None
+        return result
+
     # --------------------------------------------------------- record turns
 
     def record_user_message(self, text: str, *, conversation_id: str | None = None,

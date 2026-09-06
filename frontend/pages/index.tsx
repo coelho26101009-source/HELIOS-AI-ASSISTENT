@@ -231,6 +231,13 @@ export default function Home() {
    * rather than nothing, which is what happened while the column was written
    * and never read. */
   const showThreadMessages = useCallback((rows: ThreadMessage[] | null | undefined) => {
+    // CHANGING WHAT IS ON SCREEN ENDS THE PENDING TURN, as far as this view is
+    // concerned. `thinking` says "the conversation you are looking at is
+    // waiting for an answer"; once a different transcript is shown, that is no
+    // longer true, and leaving it set painted "O Nano está a pensar…" under a
+    // conversation with nothing pending until the other turn happened to end.
+    setThinking(false);
+    setStatus("");
     setMessages((rows ?? []).map((row) => ({
       id: `stored:${row.id}`,
       role: row.role === "user" ? "user" : "assistant",
@@ -257,7 +264,12 @@ export default function Home() {
 
     expose((msgId: string, userText?: string) => {
       setThinking(true);
-      setStatus("A pensar…");
+      // NO PLACEHOLDER TEXT HERE. `status` is the SPECIFIC thing Nano is doing
+      // ("A usar pc_volume_get…"), and the one indicator that renders it owns
+      // its own generic wording. Seeding it with "A pensar…" meant the pending
+      // bubble said something slightly different from the copy it is supposed
+      // to show, for no reason other than the order the two were written in.
+      setStatus("");
       setMessages((prev) => {
         const next = [...prev];
         // Exactly ONE user bubble per turn, identified by the turn's own id.
@@ -304,15 +316,24 @@ export default function Home() {
           return next;
         });
       } else {
-        setStatus(text.replace(/^_thinking_:?\s*/, "").replace(/^[🧠⚙️]\s*/u, "") || "A pensar…");
+        setStatus(text.replace(/^_thinking_:?\s*/, "").replace(/^[🧠⚙️]\s*/u, ""));
       }
     }, "on_stream_status");
 
     expose((msgId: string, chunk: string) => {
       setMessages((prev) => {
-        if (!prev.some((m) => m.id === msgId)) {
-          return [...prev, { id: msgId, role: "assistant", content: chunk, timestamp: new Date(), streaming: true }];
-        }
+        // A CHUNK NEVER CREATES A BUBBLE.
+        //
+        // The turn's bubble is created by on_stream_start, and the backend
+        // always emits that before any chunk for the same id. So a chunk whose
+        // bubble is not here means the turn is no longer on screen -- the user
+        // opened another conversation while the answer was still arriving --
+        // and the only correct thing to do with it is nothing.
+        //
+        // This branch used to append one instead, which wrote the answer to a
+        // question asked in one conversation into the transcript of whichever
+        // conversation the user had switched to.
+        if (!prev.some((m) => m.id === msgId)) return prev;
         return prev.map((m) => (m.id === msgId ? { ...m, content: m.content + chunk, streaming: true } : m));
       });
     }, "on_stream_chunk");
@@ -453,7 +474,7 @@ export default function Home() {
     ]);
     if (override === undefined) setInput("");
     setThinking(true);
-    setStatus("A pensar…");
+    setStatus("");
     setView("chat");
 
     // send_message returns an ACK, never the answer: the reply arrives on the
@@ -531,6 +552,8 @@ export default function Home() {
   const newConversation = useCallback(() => {
     call<any>("create_conversation", "").then((result) => {
       setMessages([]);
+      setThinking(false);   // same rule as showThreadMessages, different route
+      setStatus("");
       setInput("");
       setView("chat");
       if (result?.conversation) setActiveThreadId(result.conversation.id);
@@ -573,6 +596,37 @@ export default function Home() {
         // The backend has already moved the Brain to another thread; ask it
         // which one rather than guessing, so the two never disagree about
         // which conversation is open.
+        call<ThreadMessage[]>("get_conversation_history").then(showThreadMessages);
+      }
+      reloadThreads();
+    });
+  }, [activeThreadId, notify, reloadThreads, showThreadMessages]);
+
+  /**
+   * Delete several conversations in ONE backend call.
+   *
+   * Not a loop over `delete_conversation`: forty round trips from the renderer
+   * can be interrupted half way, and nothing would then know how far the batch
+   * got. `delete_conversations` performs the whole set and reports per-id
+   * outcomes, so a partial failure is REPORTED as one instead of being shown
+   * as success — which is the only reason a bulk endpoint was worth adding.
+   */
+  const deleteThreads = useCallback((ids: string[]) => {
+    if (!ids.length) return;
+    const hadActive = activeThreadId != null && ids.includes(activeThreadId);
+    call<any>("delete_conversations", ids).then((result) => {
+      const removed = Number(result?.removed ?? 0);
+      const failed = (result?.failed ?? []).length;
+      if (!removed) {
+        notify("Não foi possível apagar as conversas", "error");
+      } else if (failed) {
+        // Say exactly what happened. "Apagadas" for a batch that partly failed
+        // would leave rows on screen the user believes are gone.
+        notify(`${removed} apagada(s), ${failed} falharam`, "error");
+      } else {
+        notify(`${removed} conversa(s) apagada(s)`);
+      }
+      if (hadActive) {
         call<ThreadMessage[]>("get_conversation_history").then(showThreadMessages);
       }
       reloadThreads();
@@ -989,6 +1043,7 @@ export default function Home() {
               onOpen={openThread}
               onRename={renameThread}
               onDelete={deleteThread}
+              onDeleteMany={deleteThreads}
               loading={threads === null}
               messageCount={messageCount}
               onOpenMemory={() => setView("memory")}

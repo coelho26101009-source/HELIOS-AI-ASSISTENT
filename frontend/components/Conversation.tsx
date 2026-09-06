@@ -427,7 +427,7 @@ function TechnicalDetails({ meta, id }: { meta: ResponseMeta; id: string }) {
 
 /* ── Messages ─────────────────────────────────────────────────────────── */
 
-function MessageBubble({ message }: { message: Message }) {
+function MessageBubble({ message, status }: { message: Message; status?: string }) {
   const [copied, setCopied] = useState(false);
   const isUser = message.role === "user";
   const text = isUser ? message.content : cleanAssistantText(message.content);
@@ -459,10 +459,18 @@ function MessageBubble({ message }: { message: Message }) {
         <div className="msg__bubble">
           <div className="msg__body">
             {isUser ? text : <Markdown text={text} />}
+            {/* THE ONLY THINKING INDICATOR IN THE APP.
+                There used to be a second one under the conversation, so a
+                pending turn showed "O Nano está a pensar…" in the bubble AND
+                "A pensar…" below it. The status line the other one carried is
+                not lost: it is rendered HERE, so tool activity still narrates
+                itself, in one place, inside the message it belongs to. That
+                also removes the layout jump the second element caused when the
+                first token arrived and it disappeared. */}
             {message.streaming && !text && (
-              <span className="thinking">
+              <span className="thinking" role="status" aria-live="polite">
                 <span className="thinking__dots" aria-hidden="true"><i /><i /><i /></span>
-                <span>O Nano está a pensar…</span>
+                <span>{status?.trim() || "O Nano está a pensar…"}</span>
               </span>
             )}
             {message.streaming && text && <span className="caret" aria-hidden="true" />}
@@ -492,11 +500,40 @@ function MessageBubble({ message }: { message: Message }) {
   );
 }
 
+/**
+ * Whether a standalone thinking indicator is needed.
+ *
+ * NEVER TWO, AND NEVER ZERO WHILE NOTHING IS VISIBLE. Human testing saw two at
+ * once: "O Nano está a pensar…" inside the pending bubble and "A pensar…"
+ * underneath it. The naive fix — delete the second — would have shown none at
+ * all on a voice turn, which narrates "PROCESSING" before `on_stream_start`
+ * inserts any bubble.
+ *
+ * So the rule has three cases and is stated once, here, rather than being spread
+ * across the two places that render an indicator:
+ *
+ *   a streaming bubble with no text yet   the BUBBLE shows it → none here
+ *   a streaming bubble with text          the caret shows activity → none here
+ *   thinking with no streaming bubble     nothing else can → one here
+ *
+ * All three are verified by COUNTING LIVE INDICATORS in electron/test/
+ * chat-drive.js — the production bundle, driven through a real turn in
+ * Chromium — and reported as named steps by tests/test_chat_ui_contract.py.
+ * That is deliberately not a unit test of this predicate: the defect being
+ * guarded against was two elements on screen at once, and only the DOM can
+ * answer how many there are.
+ */
+export function needsStandaloneThinking(messages: Message[], thinking: boolean): boolean {
+  if (!thinking) return false;
+  return !messages.some((message) => message.streaming);
+}
+
 export function Conversation({
   messages, status, thinking,
 }: { messages: Message[]; status: string; thinking: boolean }) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [messages, status]);
+  const standalone = needsStandaloneThinking(messages, thinking);
 
   if (!messages.length && !thinking) {
     return (
@@ -519,11 +556,13 @@ export function Conversation({
   return (
     <div className="conversation" role="log" aria-live="polite" aria-label="Conversa">
       <div className="conversation__inner">
-        {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
-        {thinking && status && (
-          <div className="thinking">
+        {messages.map((message) => (
+          <MessageBubble key={message.id} message={message} status={status} />
+        ))}
+        {standalone && (
+          <div className="thinking" role="status" aria-live="polite">
             <span className="thinking__dots" aria-hidden="true"><i /><i /><i /></span>
-            <span>{status}</span>
+            <span>{status?.trim() || "O Nano está a pensar…"}</span>
           </div>
         )}
         <div ref={endRef} />
