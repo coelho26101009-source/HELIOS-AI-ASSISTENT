@@ -35,6 +35,16 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..', '..');
 const OUT_DIR = path.join(ROOT, 'frontend', 'out');
 
+/* Readiness predicates, injected into the page rather than required here.
+   See lib/page-ready.js for why every wait in this file names a condition
+   instead of a number of milliseconds. */
+const PAGE_READY = fs.readFileSync(path.join(__dirname, 'lib', 'page-ready.js'), 'utf8');
+const { watchdog } = require('./lib/watchdog');
+
+/* 120s against a run measured at 29.2s (5 runs, spread 0.27s). Crossing it
+   means wedged, not busy. */
+const guard = watchdog({ label: 'chat-drive', ms: 120000 });
+
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
@@ -66,14 +76,28 @@ function serve() {
 app.disableHardwareAcceleration();
 
 app.whenReady().then(async () => {
+  guard.phase('starting the static server');
   const server = await serve();
   const port = server.address().port;
 
   const win = new BrowserWindow({
     width: 1440, height: 900, show: false,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    /* backgroundThrottling: false IS LOAD-BEARING, not a tuning knob.
+
+       This window is never composited -- it is created with show:false and
+       only ever showInactive()d -- so Chromium classifies it as a background
+       page and throttles its timers: setTimeout is clamped to once a second,
+       and after five minutes of that, "intensive throttling" clamps it to once
+       a MINUTE. This harness awaits roughly fifty timers, so the clamp is the
+       difference between a 30-second run and one that never finishes. Measured
+       on this machine before the flag: five runs took 37s, 74s, 158s, 29s, and
+       one that was still alive after 467 seconds having burned 0.9 seconds of
+       CPU -- a hang, not slow work. */
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true,
+                      backgroundThrottling: false },
   });
 
+  guard.phase('loading the production bundle');
   await win.loadURL(`http://127.0.0.1:${port}/`);
   /* THE WINDOW HAS TO BE FOCUSED, or `:focus` never matches and every focus
      assertion below silently measures the unfocused state. `document.
@@ -82,13 +106,57 @@ app.whenReady().then(async () => {
   win.showInactive();
   win.focus();
   win.webContents.focus();
-  await new Promise((r) => setTimeout(r, 1200));
 
-  const result = await win.webContents.executeJavaScript(String.raw`
+  /* WAIT FOR THE FOCUS TO ACTUALLY ARRIVE, and record whether it did.
+
+     `:focus` does not match in a document that is not focused, so without this
+     every focus assertion below measures the unfocused state and blames the
+     stylesheet. The old code slept 1200ms and hoped. Ask the page instead, and
+     keep re-asserting focus while we wait: on Windows another application can
+     own the foreground when the run starts, and one focus() call at t=0 is not
+     enough to win it back. */
+  guard.phase('waiting for the window to take keyboard focus');
+  const focused = await (async () => {
+    for (let i = 0; i < 60; i += 1) {
+      if (await win.webContents.executeJavaScript('document.hasFocus()')) return true;
+      win.focus();
+      win.webContents.focus();
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
+  })();
+  if (!focused) {
+    console.error('WARNING: the window never took keyboard focus; '
+      + 'every :focus assertion below is measuring the unfocused state.');
+  }
+
+  /* AND KEEP IT. Taking focus once at t=0 is not enough: this window is shown
+     with showInactive() so it never owns the foreground, and on a developer's
+     desktop something else reclaims it part-way through the 22-second drive.
+     When that happens :focus stops matching, and the disclosure -- whose
+     focused state is a background colour set by .msg__meta-toggle:focus --
+     measures as transparent. That failed one run in three, reporting a
+     stylesheet defect that does not exist. Re-assert focus for as long as the
+     drive runs; the interval is cleared before the report is written. */
+  const focusKeeper = setInterval(() => {
+    if (!win.isDestroyed() && !win.webContents.isFocused()) {
+      win.focus();
+      win.webContents.focus();
+    }
+  }, 200);
+
+  guard.phase('driving the chat view and the conversation rail');
+  const result = await win.webContents.executeJavaScript(PAGE_READY + String.raw`
 (async () => {
   const report = { steps: [], calls: [], views: [] };
   const ok = (label, pass, detail) => report.steps.push({ label, pass: !!pass, detail: String(detail ?? '') });
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const { sleep, waitFor, waitGone, waitStable, settledStyle } = window.__ready;
+
+  /* Focus is a precondition for a whole family of assertions below, so it is
+     reported as its own step. A focus failure then names itself instead of
+     surfacing as "the focused control has no background". */
+  ok('the harness window owns keyboard focus',
+     document.hasFocus(), 'hasFocus=' + document.hasFocus());
   const q  = (s) => document.querySelector(s);
   const qa = (s) => Array.from(document.querySelectorAll(s));
   const byText = (sel, text) =>
@@ -318,9 +386,30 @@ app.whenReady().then(async () => {
 
     // Leave for another conversation while the answer is still streaming.
     const otherRow = qa('.chat-item-row .chat-item')[1];
+    ok('there is a second conversation to switch to', !!otherRow,
+       'rows=' + qa('.chat-item-row .chat-item').length);
     if (otherRow) {
       otherRow.click();
-      await sleep(600);
+      /* WAIT FOR THE SWITCH TO LAND, and wait for it on a signal that is NOT
+         the thing being measured.
+
+         open_conversation is async, so a fixed sleep samples a transcript
+         that still holds thread A's bubbles; the count then drops between
+         that sample and the assertion, and the drop reads as "a chunk was
+         written into the wrong thread" -- the exact opposite of what
+         happened. That failed one run in five at 600ms, and once in ten even
+         after settling on a stable bubble COUNT, because three frames can
+         agree on the old value while the round trip is still in flight.
+
+         The signal used here is the disappearance of thread A's streamed
+         text. That is what "the transcript was replaced" means, and it is
+         independent of the assertion below, which is about a chunk sent
+         AFTER the switch. Waiting on the bubble count itself would have made
+         the wait and the assertion the same statement. */
+      const switched = await waitGone(
+        () => /Primeira parte da resposta/.test(q('.conversation')?.textContent || ''));
+      ok('the transcript is replaced by the conversation we switched to', switched,
+         (q('.conversation')?.textContent || '').slice(0, 100));
       ok('switching conversations clears the pending indicator',
          countThinking() === 0,
          'indicators=' + countThinking() + ' :: '
@@ -328,6 +417,9 @@ app.whenReady().then(async () => {
 
       const bubblesAfterSwitch = qa('.msg--assistant').length;
       chunk('m2', 'resto da resposta que pertence à outra conversa.');
+      /* A chunk that is correctly IGNORED produces no DOM change to wait for,
+         so this one genuinely is a quiet period: give the handler ample time
+         to do the wrong thing, then assert it did not. */
       await sleep(400);
       ok('a chunk from the thread we left is not written into this one',
          qa('.msg--assistant').length === bubblesAfterSwitch
@@ -440,11 +532,24 @@ app.whenReady().then(async () => {
     toggle.focus();
     ok('the disclosure is focusable', document.activeElement === toggle,
        document.activeElement?.className || 'nothing focused');
-    const focusStyle = getComputedStyle(toggle);
+    /* READ THE STYLE ONLY ONCE IT HAS STOPPED MOVING. The rule that answers
+       this assertion is
+
+           .msg__meta-toggle:focus { background: rgba(255,240,240,.055); ... }
+
+       and the control carries a background transition, so
+       getComputedStyle on the tick focus() lands returns the value being
+       transitioned away FROM -- transparent. That is a correct stylesheet
+       mid-fade being reported as an invisible control, and it failed two runs
+       in five. settledStyle waits for three consecutive frames that agree. */
+    const focusBackground = await settledStyle(toggle, 'backgroundColor');
+    const focusOutline = await settledStyle(toggle, 'outlineStyle');
+    const focusBorder = await settledStyle(toggle, 'borderColor');
     ok('the focused disclosure is visually distinguished',
-       focusStyle.backgroundColor !== 'rgba(0, 0, 0, 0)' || focusStyle.outlineStyle !== 'none'
-         || focusStyle.borderColor !== 'rgba(0, 0, 0, 0)',
-       'bg=' + focusStyle.backgroundColor + ' outline=' + focusStyle.outlineStyle);
+       focusBackground !== 'rgba(0, 0, 0, 0)' || focusOutline !== 'none'
+         || focusBorder !== 'rgba(0, 0, 0, 0)',
+       'hasFocus=' + document.hasFocus() + ' bg=' + focusBackground
+         + ' outline=' + focusOutline + ' border=' + focusBorder);
 
     toggle.click();
     await sleep(300);
@@ -512,6 +617,8 @@ app.whenReady().then(async () => {
   ok('the rail lists the stored conversations', rows.length === 4, 'rows=' + rows.length);
 
   const menuButton = q('.chat-item-row .chat-item__menu');
+  ok('each conversation row carries an actions menu', !!menuButton,
+     'menus=' + qa('.chat-item-row .chat-item__menu').length);
   if (menuButton) {
     const style = getComputedStyle(menuButton);
     const rect = menuButton.getBoundingClientRect();
@@ -593,6 +700,8 @@ app.whenReady().then(async () => {
        q('.rail__select-count')?.textContent || 'no counter');
 
     const selectAll = byText('.rail__select-action', 'Selecionar tudo');
+    ok('selection mode offers Selecionar tudo', !!selectAll,
+       qa('.rail__select-action').map((el) => el.textContent.trim()).join(' | '));
     if (selectAll) {
       selectAll.click();
       await sleep(300);
@@ -626,6 +735,9 @@ app.whenReady().then(async () => {
       /* Cancel first: a confirmation that cannot be refused is not one. */
       const cancel = Array.from(dialog?.querySelectorAll('button') || [])
         .find((b) => /cancelar/i.test(b.textContent || ''));
+      ok('the confirmation can be refused', !!cancel,
+         Array.from(dialog?.querySelectorAll('button') || [])
+           .map((b) => b.textContent.trim()).join(' | ') || 'no dialog');
       if (cancel) {
         cancel.click();
         await sleep(350);
@@ -672,9 +784,13 @@ app.whenReady().then(async () => {
       const confirmDialog = q('[role="dialog"], .modal');
       const confirmButton = Array.from(confirmDialog?.querySelectorAll('button') || [])
         .find((b) => /^apagar/i.test((b.textContent || '').trim()));
+      ok('the confirmation offers an Apagar button', !!confirmButton,
+         confirmDialog ? 'dialog present, no Apagar button' : 'no dialog rendered');
       if (confirmButton) {
         confirmButton.click();
-        await sleep(700);
+        /* The rail re-renders when delete_conversations resolves. Waiting a
+           fixed 700ms sampled four rows on one run in five. */
+        await waitFor(() => qa('.chat-item-row').length === 2);
         const bulk = report.calls.filter((c) => c.name === 'delete_conversations');
         ok('confirming issues ONE bulk call, not one call per conversation',
            bulk.length === 1 && Array.isArray(bulk[0].args[0]) && bulk[0].args[0].length === 2,
@@ -709,14 +825,18 @@ app.whenReady().then(async () => {
        Deletes exactly one of the two remaining conversations, so the later
        per-size render checks still have a rail with content. */
     byText('.rail__select-action', 'Selecionar')?.click();
-    await sleep(300);
+    await waitFor(() => qa('.chat-item__check').length > 0);
     const titles = qa('.chat-item__title').map((n) => (n.textContent || '').trim());
     const rowButtons = qa('.chat-item-row .chat-item');
     const searchBox = q('.rail__search input, .rail input');
 
+    ok('the two surviving conversations and the search box are both present',
+       rowButtons.length === 2 && !!searchBox && !!titles[0] && !!titles[1],
+       'rows=' + rowButtons.length + ' search=' + !!searchBox
+         + ' titles=' + JSON.stringify(titles));
     if (rowButtons.length === 2 && searchBox && titles[0] && titles[1]) {
       rowButtons[1].click();               // select the SECOND row only
-      await sleep(250);
+      await waitFor(() => (q('.rail__select-count')?.textContent || '').startsWith('1'));
       const selectedId = titles[1];
       ok('one row can be selected on its own',
          (q('.rail__select-count')?.textContent || '').startsWith('1'),
@@ -729,9 +849,16 @@ app.whenReady().then(async () => {
       };
       // A query that shows the FIRST row and hides the selected one.
       setValue(searchBox, titles[0].split(' ')[0]);
-      await sleep(400);
+      /* Settle on the filtered list rather than on 400ms: the filter is
+         debounced, so a short sleep samples the UNfiltered rail and the whole
+         block below is skipped without a word. */
+      await waitStable(() => qa('.chat-item__title').map((n) => (n.textContent || '').trim()),
+                       { frames: 3 });
       const visibleTitles = qa('.chat-item__title').map((n) => (n.textContent || '').trim());
 
+      ok('the query hides the selected row and leaves the other one',
+         visibleTitles.length === 1 && visibleTitles[0] !== selectedId,
+         'visible=' + JSON.stringify(visibleTitles) + ' selected=' + selectedId);
       if (visibleTitles.length === 1 && visibleTitles[0] !== selectedId) {
         ok('filtering does not silently shrink the selection',
            (q('.rail__select-count')?.textContent || '').startsWith('1'),
@@ -796,11 +923,12 @@ app.whenReady().then(async () => {
   ];
 
   for (const viewport of VIEWPORTS) {
+    guard.phase('measuring the layout at ' + viewport.name);
     win.setSize(viewport.width, viewport.height);
     await new Promise((r) => setTimeout(r, 700));
-    const measured = await win.webContents.executeJavaScript(String.raw`
+    const measured = await win.webContents.executeJavaScript(PAGE_READY + String.raw`
 (async () => {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const { sleep, waitFor, settleLayout } = window.__ready;
   const q  = (s) => document.querySelector(s);
   const qa = (s) => Array.from(document.querySelectorAll(s));
   const byText = (sel, text) =>
@@ -815,44 +943,14 @@ app.whenReady().then(async () => {
   }).map((el) => el.tagName.toLowerCase() + '.' + String(el.className || '').split(' ')[0])
     .slice(0, 6);
 
-  /* WAIT FOR THE RESIZE TO LAND BEFORE BELIEVING ANY GEOMETRY.
-     win.setSize returns immediately and the renderer relayouts on its own
-     schedule, so a fixed sleep can sample a frame in which doc.clientWidth
-     ALREADY reports the new, narrower width while the elements still carry
-     their old, wider boxes. Every one of them then measures as past the right
-     edge, and a perfectly clean layout reports six offenders -- which is what
-     happened on roughly one run in four, at one viewport, while "overflow"
-     simultaneously read false. Two readings from the same instant that
-     disagree is the signature of a half-applied relayout, not of a clipped
-     page.
+  /* WAIT FOR THE RESIZE TO LAND BEFORE BELIEVING ANY GEOMETRY. settleLayout
+     holds until two consecutive animation frames agree about the viewport AND
+     about the app's own width, rather than trusting a stopwatch -- see
+     lib/page-ready.js for the half-applied relayout this stops misreporting as
+     six clipped elements.
 
-     (No backticks in this comment: it lives inside a template literal.)
-
-     So settle on two consecutive animation frames that agree about the
-     viewport AND about the app's own width, rather than on a stopwatch. */
-  const settle = async () => {
-    // requestAnimationFrame DOES NOT FIRE in an occluded or backgrounded
-    // window, and this harness runs windows that Windows may never composite.
-    // Waiting on rAF alone hung the whole run indefinitely. Race every frame
-    // against a timer so the loop always makes progress and degrades to a
-    // timed poll when there is no compositor to wait for.
-    const nextFrame = () => new Promise((resolve) => {
-      let done = false;
-      const finish = () => { if (!done) { done = true; resolve(); } };
-      requestAnimationFrame(finish);
-      setTimeout(finish, 50);
-    });
-    let last = '';
-    for (let i = 0; i < 40; i += 1) {
-      await nextFrame();
-      const app = q('.app');
-      const now = doc.clientWidth + 'x' + doc.clientHeight + ':'
-        + (app ? Math.round(app.getBoundingClientRect().width) : -1);
-      if (now === last) return true;
-      last = now;
-    }
-    return false;
-  };
+     (No backticks in this comment: it lives inside a template literal.) */
+  const settle = settleLayout;
   const settled = await settle();
 
   const state = {};
@@ -883,12 +981,15 @@ app.whenReady().then(async () => {
      product one. */
   if (!q('.rail')) {
     document.querySelector('[aria-label="Abrir conversas"]')?.click();
-    await sleep(500);
+    /* The drawer animates open. A fixed 500ms missed it at 940x620, so
+       nothing below found a rail to click, the toolbar measured as "not
+       rendered", and a clean page reported a clipping failure. */
+    await waitFor(() => q('.rail'));
   }
+  state.railOpened = !!q('.rail');
   byText('.rail__select-action', 'Selecionar')?.click();
-  await sleep(300);
+  await waitFor(() => qa('.chat-item-row .chat-item').length > 0);
   qa('.chat-item-row .chat-item')[0]?.click();
-  await sleep(200);
   await settle();
   const bar = q('.rail__select-bar');
   const barRect = bar ? bar.getBoundingClientRect() : null;
@@ -908,7 +1009,7 @@ app.whenReady().then(async () => {
 
   /* C. the bulk-delete confirmation */
   byText('.rail__select-action--danger', 'Eliminar')?.click();
-  await sleep(400);
+  await waitFor(() => q('[role="dialog"], .modal'));
   await settle();
   const dialog = q('[role="dialog"], .modal');
   const dialogRect = dialog ? dialog.getBoundingClientRect() : null;
@@ -968,6 +1069,8 @@ app.whenReady().then(async () => {
     bulkDeleteArgs: result.calls.filter((c) => c.name === 'delete_conversations').map((c) => c.args),
   }, null, 2));
 
+  clearInterval(focusKeeper);
+  guard.disarm();
   server.close();
   app.exit(failed.length ? 1 : 0);
-}).catch((err) => { console.error(err); app.exit(1); });
+}).catch((err) => { guard.disarm(); console.error(err); app.exit(1); });

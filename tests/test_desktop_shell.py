@@ -27,7 +27,10 @@ MAIN_JS = ELECTRON_DIR / "main.js"
 ASSETS = ELECTRON_DIR / "assets"
 DESKTOP_LAUNCHER = REPO_ROOT / "NANO_DESKTOP.bat"
 
-ELECTRON_BIN = ELECTRON_DIR / "node_modules" / "electron" / "dist" / "electron.exe"
+# Platform-correct binary name and the shared spawn: see
+# tests/electron_harness.py. The hardcoded "electron.exe" that used to be
+# here is why the real-Chromium tests could never run on Linux CI.
+from tests.electron_harness import ELECTRON_BIN, run_harness
 NODE = shutil.which("node")
 
 
@@ -679,26 +682,31 @@ def test_the_browser_launcher_still_exists():
 #  Real layout measurement in real Chromium  (Parts 13 and 23)
 # ==========================================================================
 
+@pytest.fixture(scope="module")
+def render_report() -> dict:
+    """One render-check run, shared by every assertion that reads it.
+
+    The two tests below used to spawn the harness separately, paying 22
+    seconds and a whole Chromium process tree twice to ask two questions of
+    the same report.
+    """
+    return run_harness("render-check.js")
+
+
 @pytest.mark.skipif(not ELECTRON_BIN.exists(), reason="the Electron binary is not installed")
 @pytest.mark.skipif(
     not (REPO_ROOT / "frontend" / "out" / "index.html").exists(),
     reason="frontend/out is not built",
 )
-def test_the_ui_has_no_horizontal_overflow_at_any_desktop_size():
+def test_the_ui_has_no_horizontal_overflow_at_any_desktop_size(render_report):
     """Renders the real production bundle at 1920, 1600, 1366 and 1280 wide.
 
     The user's report was that the right-hand side felt cut off until the
     browser was zoomed to ~80%. Reading the CSS could not reproduce it, which
     is why this measures the rendered document instead.
     """
-    result = subprocess.run(
-        [str(ELECTRON_BIN), str(ELECTRON_DIR / "test" / "render-check.js")],
-        cwd=str(ELECTRON_DIR), capture_output=True, text=True, timeout=300,
-        env=_child_env(),
-    )
-    assert "{" in result.stdout, f"the render check produced no report:\n{result.stderr[-3000:]}"
-    report = json.loads(result.stdout[result.stdout.index("{"):])
-    assert report["ok"], report.get("error")
+    assert render_report["ok"], render_report.get("error")
+    report = render_report
 
     for row in report["desktop"]:
         assert row["hasApp"], f"{row['viewport']}: the app shell did not render"
@@ -787,19 +795,14 @@ def test_the_ui_has_no_horizontal_overflow_at_any_desktop_size():
     not (REPO_ROOT / "frontend" / "out" / "index.html").exists(),
     reason="frontend/out is not built",
 )
-def test_the_same_bundle_still_works_with_no_desktop_shell():
+def test_the_same_bundle_still_works_with_no_desktop_shell(render_report):
     """Capability detection, checked by actually removing the capability.
 
     The identical production bundle is loaded with no preload, so
     `window.nanoApp` does not exist. It must render the app and simply omit the
     native title bar -- not throw, and not leave a dead window.
     """
-    result = subprocess.run(
-        [str(ELECTRON_BIN), str(ELECTRON_DIR / "test" / "render-check.js")],
-        cwd=str(ELECTRON_DIR), capture_output=True, text=True, timeout=300,
-        env=_child_env(),
-    )
-    report = json.loads(result.stdout[result.stdout.index("{"):])
+    report = render_report
     browser = report["browser"]
 
     assert browser is not None and browser["hasApp"], "the browser fallback did not render"

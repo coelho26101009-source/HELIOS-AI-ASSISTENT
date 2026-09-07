@@ -72,8 +72,10 @@ identity, which is a packaging decision.
 ### The test gate
 
 A release requires everything green, on a Windows machine, from a clean
-checkout. CI does not cover all of it: the render and behaviour harnesses need
-real Chromium and a display, and the real-application checks need a human.
+checkout. CI now runs the real-Chromium harnesses too, in the `chromium-ui`
+job, on Linux under xvfb -- so what is left uncovered is narrower than it was:
+the Windows rendering path, and the real-application checks, which need a
+human.
 
 ```bash
 python -m pytest -q                     # backend

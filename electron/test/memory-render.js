@@ -31,6 +31,13 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..', '..');
 const OUT_DIR = path.join(ROOT, 'frontend', 'out');
 const PRELOAD = path.join(__dirname, '..', 'preload.js');
+const { watchdog } = require('./lib/watchdog');
+
+/* A deadline, not a tuning knob: a healthy run of this harness was
+   measured at well under 35s, so crossing two minutes means wedged.
+   The guard reports in the normal JSON shape and exits, so the caller
+   gets a named failing step instead of an empty pipe. */
+const guard = watchdog({ label: 'memory-render', ms: 120000 });
 
 const VIEWPORTS = [
   { name: '1920x1080', width: 1920, height: 1080 },
@@ -420,6 +427,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 async function main() {
   if (!fs.existsSync(path.join(OUT_DIR, 'index.html'))) {
     console.log(JSON.stringify({ ok: false, error: 'frontend/out is not built' }));
+    guard.disarm();
     app.exit(2);
     return;
   }
@@ -434,7 +442,13 @@ async function main() {
   try {
     window = new BrowserWindow({
       show: false, frame: false, width: 1366, height: 768,
+      /* backgroundThrottling: false: this window is never composited, so Chromium
+       classifies it as a background page and clamps its timers to once a
+       second (and, after five minutes, once a minute). That turned one
+       harness's 29s run into a 467s hang. Measured stable here without the
+       flag, but the mechanism is identical and the flag costs nothing. */
       webPreferences: { preload: PRELOAD, contextIsolation: true,
+                        backgroundThrottling: false,
                         nodeIntegration: false, sandbox: true },
     });
     window.webContents.on('console-message', (_e, level, message) => {
@@ -488,8 +502,13 @@ async function main() {
   }
 
   console.log(JSON.stringify(report, null, 2));
+  guard.disarm();
   app.exit(report.ok ? 0 : 1);
 }
 
 app.disableHardwareAcceleration();
-app.whenReady().then(main);
+app.whenReady().then(main).catch((err) => {
+  guard.disarm();
+  console.error(err);
+  app.exit(1);
+});

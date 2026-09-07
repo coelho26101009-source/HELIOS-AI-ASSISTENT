@@ -31,6 +31,13 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..', '..');
 const OUT_DIR = path.join(ROOT, 'frontend', 'out');
 const PRELOAD = path.join(__dirname, '..', 'preload.js');
+const { watchdog } = require('./lib/watchdog');
+
+/* A deadline, not a tuning knob: a healthy run of this harness was
+   measured at well under 35s, so crossing two minutes means wedged.
+   The guard reports in the normal JSON shape and exits, so the caller
+   gets a named failing step instead of an empty pipe. */
+const guard = watchdog({ label: 'render-check', ms: 120000 });
 
 /** The desktop resolutions Nano must be comfortable at, as CSS pixels.
  *
@@ -236,6 +243,7 @@ async function measureSection(window, viewport, label) {
 async function main() {
   if (!fs.existsSync(path.join(OUT_DIR, 'index.html'))) {
     console.log(JSON.stringify({ ok: false, error: 'frontend/out is not built' }));
+    guard.disarm();
     app.exit(2);
     return;
   }
@@ -261,6 +269,9 @@ async function main() {
       show: false, frame: false, width: 1280, height: 720,
       webPreferences: {
         preload: PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true,
+        // See the note on the second window below: never composited, so
+        // Chromium would clamp this page's timers too.
+        backgroundThrottling: false,
       },
     });
     desktopWindow.webContents.on('console-message', (_e, level, message) => {
@@ -278,7 +289,13 @@ async function main() {
     const fallbackErrors = [];
     browserWindow = new BrowserWindow({
       show: false, width: 1366, height: 768,
-      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+      /* backgroundThrottling: false: this window is never composited, so
+         Chromium classifies it as a background page and clamps its timers to
+         once a second (and, after five minutes, once a minute). That turned
+         one harness's 29s run into a 467s hang. Measured stable here without
+         the flag, but the mechanism is identical and the flag costs nothing. */
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true,
+                        backgroundThrottling: false },
     });
     browserWindow.webContents.on('console-message', (_e, level, message) => {
       if (level >= 2 && isPageError(message)) fallbackErrors.push(message);
@@ -298,8 +315,13 @@ async function main() {
   }
 
   console.log(JSON.stringify(report, null, 2));
+  guard.disarm();
   app.exit(report.ok ? 0 : 1);
 }
 
 app.disableHardwareAcceleration();
-app.whenReady().then(main);
+app.whenReady().then(main).catch((err) => {
+  guard.disarm();
+  console.error(err);
+  app.exit(1);
+});

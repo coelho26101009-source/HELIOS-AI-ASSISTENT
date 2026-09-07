@@ -21,53 +21,19 @@ steps into named assertions, so a failure names the behaviour rather than
 """
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 from pathlib import Path
 
 import pytest
 
+from tests.electron_harness import run_harness
+
 ROOT = Path(__file__).resolve().parent.parent
-ELECTRON_DIR = ROOT / "electron"
-ELECTRON_BIN = ELECTRON_DIR / "node_modules" / "electron" / "dist" / "electron.exe"
-FRONTEND_OUT = ROOT / "frontend" / "out"
 
-
-def _child_env() -> dict:
-    """A clean environment for spawning Electron.
-
-    ELECTRON_RUN_AS_NODE is exported by editors that are themselves Electron
-    apps, and inheriting it makes the electron binary run as plain Node -- so
-    `require('electron')` returns the npm shim and the harness dies with a
-    confusing "cannot read property of undefined".
-    """
-    env = dict(os.environ)
-    env.pop("ELECTRON_RUN_AS_NODE", None)
-    return env
-
-
-def _run(script: str) -> dict:
-    if not ELECTRON_BIN.exists():
-        pytest.skip("the Electron binary is not installed")
-    if not (FRONTEND_OUT / "index.html").exists():
-        pytest.skip("frontend/out is not built")
-    result = subprocess.run(
-        [str(ELECTRON_BIN), str(ELECTRON_DIR / "test" / script)],
-        cwd=str(ELECTRON_DIR), capture_output=True, text=True, timeout=600,
-        env=_child_env(),
-        # DECODE AS UTF-8, EXPLICITLY. `text=True` alone decodes with the
-        # locale codec, which on this machine is cp1252 -- and the harness
-        # reports Portuguese UI copy. A single "“" (UTF-8 E2 80 9D) is enough:
-        # byte 0x9D is undefined in cp1252, the reader thread dies inside
-        # subprocess, `result.stdout` comes back as None, and all seven graph
-        # tests error at fixture setup with "argument of type 'NoneType' is not
-        # iterable" -- a message that says nothing about what broke.
-        encoding="utf-8", errors="replace",
-    )
-    assert "{" in result.stdout, (
-        f"{script} produced no report:\n{result.stderr[-4000:]}")
-    return json.loads(result.stdout[result.stdout.index("{"):])
+# The spawn itself -- the platform-correct binary name, UTF-8 decoding, the
+# evidence-based timeout and the process-tree cleanup -- lives in
+# tests/electron_harness.py, because three modules need exactly the same thing
+# and three copies of it had already drifted apart.
+_run = run_harness
 
 
 @pytest.fixture(scope="module")
@@ -95,10 +61,35 @@ def _passed(report: dict, needle: str) -> None:
 # ============================================================ every step green
 
 
+#: The number of steps chat-drive.js emits on a healthy run. A FLOOR, not an
+#: equality: adding coverage should never need this file edited, but LOSING it
+#: must be impossible to do quietly.
+#:
+#: This constant exists because the harness used to guard whole sections behind
+#: `if (someElement) { ... }`. When a fixed sleep under-waited and the element
+#: was not there yet, up to 29 assertions simply did not run -- and the report
+#: still said every step it had emitted passed. A measured drop from 83 steps
+#: to 78 was observed while the harness reported itself green. Every one of
+#: those preconditions is now its own named step, so a miss is a failure; this
+#: floor is the second lock, catching a whole section going missing at once.
+MINIMUM_CHAT_STEPS = 92
+
+
 def test_the_real_chat_view_passes_every_driven_step(chat_report):
     failures = [step for step in chat_report["steps"] if not step["pass"]]
     assert not failures, "\n".join(
         f"{step['label']} — {step['detail']}" for step in failures)
+
+
+def test_no_driven_step_went_missing(chat_report):
+    """A green report that measured less than it used to is not a green report."""
+    ran = len(chat_report["steps"])
+    assert ran >= MINIMUM_CHAT_STEPS, (
+        f"chat-drive.js emitted {ran} steps but should emit at least "
+        f"{MINIMUM_CHAT_STEPS}. Steps do not vanish because the product "
+        f"changed; they vanish because a precondition was not met and the "
+        f"assertions behind it never ran.\nran: "
+        + "; ".join(step["label"] for step in chat_report["steps"]))
 
 
 def test_every_function_the_chat_view_calls_actually_exists(chat_report):

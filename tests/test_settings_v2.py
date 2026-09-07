@@ -590,43 +590,20 @@ def test_the_conversation_panel_can_show_both_halves():
 
 # ── Behavioural: the real bundle, driven in Electron's Chromium ──────────
 
-ELECTRON_DIR = ROOT / "electron"
-ELECTRON_BIN = ELECTRON_DIR / "node_modules" / "electron" / "dist" / "electron.exe"
-
-
-def _child_env() -> dict:
-    """A clean environment for spawning Electron.
-
-    ELECTRON_RUN_AS_NODE is exported by editors that are themselves Electron
-    apps, and inheriting it makes the electron binary run as plain Node -- so
-    `require('electron')` returns the npm shim and the harness dies with a
-    confusing "cannot read property of undefined".
-    """
-    import os
-
-    env = dict(os.environ)
-    env.pop("ELECTRON_RUN_AS_NODE", None)
-    return env
+from tests.electron_harness import run_harness
 
 
 @pytest.fixture(scope="module")
 def drive_report() -> dict:
-    """Run the settings drive once and share the report across the assertions."""
-    import subprocess
+    """Run the settings drive once and share the report across the assertions.
 
-    if not ELECTRON_BIN.exists():
-        pytest.skip("the Electron binary is not installed")
-    if not (FRONTEND / "out" / "index.html").exists():
-        pytest.skip("frontend/out is not built")
-
-    result = subprocess.run(
-        [str(ELECTRON_BIN), str(ELECTRON_DIR / "test" / "settings-drive.js")],
-        cwd=str(ELECTRON_DIR), capture_output=True, text=True, timeout=300,
-        env=_child_env(),
-    )
-    assert "{" in result.stdout, (
-        f"the settings drive produced no report:\n{result.stderr[-4000:]}")
-    return json.loads(result.stdout[result.stdout.index("{"):])
+    The spawn lives in tests/electron_harness.py. Moving it there fixed a
+    latent defect in this module specifically: it decoded the child's output
+    with `text=True`, which uses the locale codec -- cp1252 here -- while the
+    harness reports Portuguese UI copy. One curly quote would have taken the
+    whole module down with "argument of type 'NoneType' is not iterable".
+    """
+    return run_harness("settings-drive.js")
 
 
 def test_the_real_ui_passes_every_driven_step(drive_report):

@@ -34,6 +34,13 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..', '..');   // electron/test -> repo root
 const OUT_DIR = path.join(ROOT, 'frontend', 'out');
+const { watchdog } = require('./lib/watchdog');
+
+/* A deadline, not a tuning knob: a healthy run of this harness was
+   measured at well under 35s, so crossing two minutes means wedged.
+   The guard reports in the normal JSON shape and exits, so the caller
+   gets a named failing step instead of an empty pipe. */
+const guard = watchdog({ label: 'settings-drive', ms: 120000 });
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -71,7 +78,13 @@ app.whenReady().then(async () => {
 
   const win = new BrowserWindow({
     width: 1366, height: 768, show: false,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    /* backgroundThrottling: false: this window is never composited, so Chromium
+     classifies it as a background page and clamps its timers to once a
+     second (and, after five minutes, once a minute). That turned one
+     harness's 29s run into a 467s hang. Measured stable here without the
+     flag, but the mechanism is identical and the flag costs nothing. */
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true,
+                      backgroundThrottling: false },
   });
 
   await win.loadURL(`http://127.0.0.1:${port}/`);
@@ -602,5 +615,6 @@ app.whenReady().then(async () => {
   }, null, 2));
 
   server.close();
+  guard.disarm();
   app.exit(failed.length ? 1 : 0);
-}).catch((err) => { console.error(err); app.exit(1); });
+}).catch((err) => { guard.disarm(); console.error(err); app.exit(1); });
