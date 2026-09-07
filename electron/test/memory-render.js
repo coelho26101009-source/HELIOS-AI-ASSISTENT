@@ -33,6 +33,12 @@ const OUT_DIR = path.join(ROOT, 'frontend', 'out');
 const PRELOAD = path.join(__dirname, '..', 'preload.js');
 const { watchdog } = require('./lib/watchdog');
 
+/* Readiness predicates, injected into the page rather than required here.
+   See lib/page-ready.js: it is what settles the opacity read below on the
+   correct side of the CSS transition instead of on a guessed number of
+   milliseconds. */
+const PAGE_READY = fs.readFileSync(path.join(__dirname, 'lib', 'page-ready.js'), 'utf8');
+
 /* A deadline, not a tuning knob: a healthy run of this harness was
    measured at well under 35s, so crossing two minutes means wedged.
    The guard reports in the normal JSON shape and exits, so the caller
@@ -277,7 +283,7 @@ const PROBE = `(() => {
  * can report "not measured" instead of a crash that reads like a failure.
  */
 const GRAPH_INTERACT = `(async () => {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const { sleep, settledStyle } = window.__ready;
   const qa = (s) => Array.from(document.querySelectorAll(s));
   const svg = document.querySelector('.graph-svg');
   const nodes = qa('.graph-node');
@@ -321,9 +327,20 @@ const GRAPH_INTERACT = `(async () => {
   const litEdges = qa('.graph-edge.is-lit').length;
   const dimmedEdges = qa('.graph-edge.is-dim').length;
   const detailPanel = !!document.querySelector('.graph-selected');
-  /* Faded, not hidden: the shape of the rest of the graph is context. */
-  const dimOpacity = dimmedNodes
-    ? Number(getComputedStyle(qa('.graph-node.is-dim')[0]).opacity) : null;
+  /* Faded, not hidden: the shape of the rest of the graph is context.
+
+     READ THE OPACITY ONLY ONCE IT HAS STOPPED MOVING. .graph-node carries
+     transition: opacity var(--transition), so getComputedStyle on the tick
+     the is-dim class lands can return the value being transitioned AWAY
+     FROM -- 1, the resting opacity -- rather than the target 0.26. A fixed
+     250ms sleep hid this on a fast GPU-accelerated box; it did not hide it
+     on a Linux CI runner under software rendering, where dimOpacity measured
+     as exactly 1. settledStyle waits for three consecutive frames that
+     agree, so it reports whatever the style ACTUALLY settles to -- it does
+     not know 0.26 is the expected answer, and the assertion that checks that
+     stays exactly as strict as it was. */
+  const dimEl = qa('.graph-node.is-dim')[0] || null;
+  const dimOpacity = dimEl ? Number(await settledStyle(dimEl, 'opacity')) : null;
 
   /* ---- dragging a node moves THAT node and nothing else ------------------ */
   const before = positionOf(target);
@@ -487,7 +504,7 @@ async function main() {
           measured.search =
             await window.webContents.executeJavaScript(SEARCH_PROBE, true);
           measured.interaction =
-            await window.webContents.executeJavaScript(GRAPH_INTERACT, true);
+            await window.webContents.executeJavaScript(PAGE_READY + GRAPH_INTERACT, true);
         }
         report.views.push({ viewport: viewport.name, view: label, ...measured });
         if (measured.horizontalOverflow || measured.offenders.length) report.ok = false;
