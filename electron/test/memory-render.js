@@ -329,16 +329,16 @@ const GRAPH_INTERACT = `(async () => {
   const detailPanel = !!document.querySelector('.graph-selected');
   /* Faded, not hidden: the shape of the rest of the graph is context.
 
-     READ THE OPACITY ONLY ONCE IT HAS STOPPED MOVING. .graph-node carries
-     transition: opacity var(--transition), so getComputedStyle on the tick
-     the is-dim class lands can return the value being transitioned AWAY
-     FROM -- 1, the resting opacity -- rather than the target 0.26. A fixed
-     250ms sleep hid this on a fast GPU-accelerated box; it did not hide it
-     on a Linux CI runner under software rendering, where dimOpacity measured
-     as exactly 1. settledStyle waits for three consecutive frames that
-     agree, so it reports whatever the style ACTUALLY settles to -- it does
-     not know 0.26 is the expected answer, and the assertion that checks that
-     stays exactly as strict as it was. */
+     READ THE OPACITY ONLY ONCE IT HAS STOPPED MOVING, via settledStyle rather
+     than an immediate read -- .graph-node carries transition: opacity
+     var(--transition), so a same-tick getComputedStyle can return the value
+     being transitioned AWAY FROM (1) rather than the target (0.26). This
+     alone is necessary but was NOT sufficient: it settled at the wrong value
+     (1) on Linux CI even so, because the window itself was never composited.
+     See the showInactive() comment above main()'s BrowserWindow for that
+     half of the story -- a polling loop cannot tell "the value is correct
+     and holding steady" apart from "the value is frozen because no real
+     frame is ticking" from inside the page alone. */
   const dimEl = qa('.graph-node.is-dim')[0] || null;
   const dimOpacity = dimEl ? Number(await settledStyle(dimEl, 'opacity')) : null;
 
@@ -459,15 +459,50 @@ async function main() {
   try {
     window = new BrowserWindow({
       show: false, frame: false, width: 1366, height: 768,
-      /* backgroundThrottling: false: this window is never composited, so Chromium
-       classifies it as a background page and clamps its timers to once a
-       second (and, after five minutes, once a minute). That turned one
-       harness's 29s run into a 467s hang. Measured stable here without the
-       flag, but the mechanism is identical and the flag costs nothing. */
+      /* backgroundThrottling: false: belt AND braces alongside showInactive()
+       below. Even a shown-but-inactive window can still be treated as a
+       background page for timer purposes, and this harness awaits several
+       timers per view; the flag costs nothing and was already proven load-
+       bearing in chat-drive.js. */
       webPreferences: { preload: PRELOAD, contextIsolation: true,
                         backgroundThrottling: false,
                         nodeIntegration: false, sandbox: true },
     });
+
+    /* THIS WINDOW MUST ACTUALLY BE PRESENTED, not merely constructed.
+
+       A BrowserWindow created with show:false and never shown at all has no
+       surface for the OS compositor to draw into. Measured directly on this
+       machine (temporary diagnostics, since removed): a 500ms window of
+       requestAnimationFrame got exactly ONE tick before showInactive() and
+       141 after it -- proof, not theory, that an unshown window is starved
+       of real rendering opportunities regardless of platform. A CSS
+       Transition is scheduled to start on exactly such an opportunity, so on
+       a window that never gets one, the transitioned property can be read
+       forever at its BEFORE value -- which is indistinguishable, to a
+       polling loop, from a value that settled there. That is consistent with
+       what test_unrelated_elements_fade_rather_than_disappear hit on Linux
+       CI: dimOpacity read 1 (the resting, pre-transition value) no matter how
+       long settledStyle() waited, because the frames it was "settling"
+       across were never real compositor frames. (The Linux runner itself
+       could not be reached directly to confirm the rAF count there; the fix
+       is applied on the mechanism proven here, which does not depend on the
+       OS.)
+
+       This machine did not surface the bug locally for an unrelated, second
+       reason: it independently reports prefers-reduced-motion: reduce, which
+       matches the @media rule in globals.css that sets `transition: none` on
+       these elements -- so there was no transition to race in the first
+       place here, on top of the window never being composited. Two masks,
+       not one, which is why 8 clean local runs before this fix proved
+       nothing about this path.
+
+       showInactive() is the fix, not a longer wait: it is the same call
+       chat-drive.js already relies on, gives the window a real (if
+       unfocused, off-screen-owned) surface, and needs no .focus() here since
+       nothing in this harness reads :focus. */
+    window.showInactive();
+
     window.webContents.on('console-message', (_e, level, message) => {
       if (level >= 2 && !message.includes('Electron Security Warning')) {
         report.consoleErrors.push(message);

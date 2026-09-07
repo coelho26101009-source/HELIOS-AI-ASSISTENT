@@ -84,6 +84,27 @@ window.__ready = window.__ready || (() => {
    * waitFor it does not know what the right answer is, so it cannot bias the
    * measurement towards passing -- it only waits for the page to stop moving.
    * Values are compared by JSON, so objects and arrays work.
+   *
+   * REQUIRES A GENUINELY COMPOSITED PAGE. "Stable across frames" and "frozen
+   * because there are no real frames" produce the identical signal from
+   * inside the page: `nextFrame` degrades to its setTimeout branch, `read()`
+   * returns the same unchanged value every poll, and this resolves `stable:
+   * true` having proven nothing. A BrowserWindow created with show:false and
+   * never shown has no surface for the compositor to draw into and gets no
+   * real rendering opportunities -- measured directly (temporary diagnostics,
+   * since removed) at ONE requestAnimationFrame tick in a 500ms window,
+   * versus 141 once the window was shown with showInactive(). A CSS
+   * Transition is scheduled to start on exactly such an opportunity, so on a
+   * window like that the transitioned property reads at its BEFORE value
+   * forever, and this function calls that "settled". It happened:
+   * memory-render.js's dimOpacity read a frozen 1 through this exact path on
+   * Linux CI while appearing to behave locally, because a SEPARATE,
+   * unrelated setting (prefers-reduced-motion active on the dev machine)
+   * meant there was no transition to freeze in the first place there. Call
+   * `win.showInactive()` (see chat-drive.js and memory-render.js) before
+   * driving any harness that calls this, waitFor, waitGone, settleLayout or
+   * settledStyle -- a page that is never shown cannot be waited into
+   * correctness.
    */
   const waitStable = async (read, { frames = 3, timeout = DEFAULT_TIMEOUT } = {}) => {
     const deadline = Date.now() + timeout;
