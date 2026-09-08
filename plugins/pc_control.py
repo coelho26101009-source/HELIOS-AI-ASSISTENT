@@ -757,7 +757,8 @@ def pc_pointer_scroll(arguments: dict[str, Any]) -> dict:
             return fail("invalid_input", "A direcção tem de ser up, down, left ou right.",
                         allowed=["up", "down", "left", "right"])
         raw = args.get("clicks")
-        magnitude = keyboard.scroll_magnitude(3 if raw is None else raw)
+        magnitude = keyboard.scroll_magnitude(
+            keyboard.DEFAULT_SCROLL_CLICKS if raw is None else raw)
         target = _aim(args)
         signed = magnitude if direction in {"up", "right"} else -magnitude
         result = keyboard.scroll(signed, horizontal=direction in {"left", "right"})
@@ -803,7 +804,7 @@ def pc_file_search(arguments: dict[str, Any]) -> dict:
         result = files.search_files(
             str(args.get("query") or ""),
             roots=[str(r) for r in roots] if isinstance(roots, list) else None,
-            max_results=int(args.get("max_results") or 20),
+            max_results=int(args.get("max_results") or files.DEFAULT_FILE_RESULTS),
         )
         if not result["count"]:
             return fail("not_found",
@@ -1017,7 +1018,7 @@ def pc_screenshot_capture(arguments: dict[str, Any]) -> dict:
     """
     def run() -> dict:
         args = arguments or {}
-        mode = str(args.get("mode") or "desktop").strip().lower()
+        mode = str(args.get("mode") or screen.DEFAULT_CAPTURE_MODE).strip().lower()
         window = None
         if mode == "window":
             window = _resolve_window_arg(args)
@@ -1144,8 +1145,9 @@ def get_tools() -> list[dict]:
         _tool("pc_volume_set", "Define o volume do sistema para um valor entre 0 e 100.",
               {"level": {"type": "integer", "minimum": 0, "maximum": 100}}, ["level"]),
         _tool("pc_volume_change",
-              "Aumenta ou reduz o volume. Sem valor, usa 10 pontos.",
-              {"delta": {"type": "integer", "minimum": -100, "maximum": 100}}),
+              f"Aumenta ou reduz o volume. Sem valor, usa {audio.DEFAULT_STEP} pontos.",
+              {"delta": {"type": "integer", "minimum": -100, "maximum": 100,
+                         "default": audio.DEFAULT_STEP}}),
         _tool("pc_volume_mute", "Desliga o som do sistema.", {}),
         _tool("pc_volume_unmute", "Volta a ligar o som do sistema.", {}),
         _tool("pc_media_control",
@@ -1166,8 +1168,10 @@ def get_tools() -> list[dict]:
                "monitor": {"type": "integer", "minimum": 1}},
               ["level"]),
         _tool("pc_display_change_brightness",
-              "Aumenta ou reduz o brilho de um monitor. Sem valor, usa 10 pontos.",
-              {"delta": {"type": "integer", "minimum": -100, "maximum": 100},
+              f"Aumenta ou reduz o brilho de um monitor. Sem valor, usa "
+              f"{display.DEFAULT_STEP} pontos.",
+              {"delta": {"type": "integer", "minimum": -100, "maximum": 100,
+                         "default": display.DEFAULT_STEP},
                "monitor": {"type": "integer", "minimum": 1}}),
 
         # ------------------------------------------------------ clipboard
@@ -1208,7 +1212,8 @@ def get_tools() -> list[dict]:
               {**_WINDOW_TARGET_SCHEMA,
                "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
                "clicks": {"type": "integer", "minimum": 1,
-                          "maximum": keyboard.MAX_SCROLL_CLICKS}},
+                          "maximum": keyboard.MAX_SCROLL_CLICKS,
+                          "default": keyboard.DEFAULT_SCROLL_CLICKS}},
               ["direction"]),
 
         # ---------------------------------------------------------- files
@@ -1226,7 +1231,8 @@ def get_tools() -> list[dict]:
               {"query": {"type": "string"},
                "roots": {"type": "array", "items": {"type": "string"},
                          "description": "Pastas onde procurar. Opcional."},
-               "max_results": {"type": "integer", "minimum": 1, "maximum": MAX_FILE_RESULTS}},
+               "max_results": {"type": "integer", "minimum": 1, "maximum": MAX_FILE_RESULTS,
+                               "default": files.DEFAULT_FILE_RESULTS}},
               ["query"]),
         _tool("pc_file_open",
               "Abre um documento existente na aplicação predefinida do Windows. "
@@ -1316,6 +1322,7 @@ def get_tools() -> list[dict]:
               "ficheiro local. A imagem NÃO é enviada ao modelo nem para a nuvem.",
               {**_WINDOW_TARGET_SCHEMA,
                "mode": {"type": "string", "enum": list(screen.CAPTURE_MODES),
+                        "default": screen.DEFAULT_CAPTURE_MODE,
                         "description": "desktop (predefinido), active_window ou window."}}),
     ]
 

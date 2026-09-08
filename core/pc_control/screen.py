@@ -113,6 +113,9 @@ def cleanup(*, retention_seconds: float = RETENTION_SECONDS,
 
 
 CAPTURE_MODES = ("desktop", "active_window", "window")
+#: What a capture with no `mode` means. Declared in the tool schema too,
+#: so an omitted mode and an explicit "desktop" are one identity.
+DEFAULT_CAPTURE_MODE = "desktop"
 
 
 def _scaled(width: int, height: int) -> tuple[int, int, float]:
@@ -236,7 +239,7 @@ def capture(mode: str = "desktop", *, window: dict | None = None) -> dict:
     """
     if not winapi.IS_WINDOWS:
         raise PCControlError("unsupported_platform", "As capturas de ecrã só funcionam no Windows.")
-    key = str(mode or "desktop").strip().lower()
+    key = str(mode or DEFAULT_CAPTURE_MODE).strip().lower()
     if key not in CAPTURE_MODES:
         raise PCControlError("invalid_input",
                              f"'{mode}' não é um modo de captura conhecido.",
@@ -294,5 +297,6 @@ def capture(mode: str = "desktop", *, window: dict | None = None) -> dict:
                                    "process": window.get("process")}})
 
 
-__all__ = ["CAPTURE_MODES", "MAX_DIMENSION", "MAX_RETAINED", "RETENTION_SECONDS",
-           "SCREENSHOT_DIR", "capture", "cleanup"]
+__all__ = ["CAPTURE_MODES", "DEFAULT_CAPTURE_MODE", "MAX_DIMENSION",
+           "MAX_RETAINED", "RETENTION_SECONDS", "SCREENSHOT_DIR",
+           "capture", "cleanup"]

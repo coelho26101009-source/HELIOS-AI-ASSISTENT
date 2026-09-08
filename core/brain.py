@@ -46,7 +46,7 @@ from core.memory import MemoryEngine
 from core.errors import ToolExecutionError, GuardrailError
 from core.model_router import ModelRequest, ModelRouter, PrivacyLevel, TaskType
 from core import (capabilities, google_provider, mistral_provider, model_selection,
-                  provider_failures, provider_status, providers)
+                  provider_failures, provider_status, providers, schema_validation)
 from core.trust import TRUST_BOUNDARY_SYSTEM_RULES, TrustLevel, wrap_untrusted
 
 logger = logging.getLogger("nano.brain")
@@ -328,6 +328,10 @@ class Brain:
         # (name, arguments). Provider failover happens inside a turn, so this
         # is what stops a consequential action running twice. See _run_tool.
         self._turn_tool_results: dict[str, dict] = {}
+        #: Calls that have STARTED but not finished, keyed the same way.
+        #: See _run_tool: without it, two identical calls in one round
+        #: both passed the ledger lookup before either wrote to it.
+        self._turn_tool_inflight: dict[str, asyncio.Future] = {}
         self.conversation: list[dict] = []
         self.groq_model = str(cfg.get("groq_model") or providers.DEFAULT_FAST_MODEL)
         # Two cloud tiers; the strong one is only reached by an explicit
@@ -1185,6 +1189,7 @@ class Brain:
         # so this must not be cleared between model steps. It is what stops the
         # second provider re-running a Windows action the first already did.
         self._turn_tool_results = {}
+        self._turn_tool_inflight = {}
         self.conversation.append({"role": "user", "content": user_message})
         self._trim_conversation()
 
@@ -1480,6 +1485,35 @@ class Brain:
     _ENUM_ARGUMENTS = frozenset({"key", "hotkey", "action", "section", "position",
                                  "state", "direction", "mode", "engine", "app"})
 
+    def _effective_arguments(self, name: str, args: dict) -> dict:
+        """The arguments as the REGISTERED SCHEMA says they mean.
+
+        This is the fix for the gap that raw JSON left open. A provider is free
+        to serialise the same integer as ``10``, ``10.0`` or ``"10"``, and the
+        narrow handler executes all three as ``10``. Keying the ledger on the
+        serialisation therefore gave one effect up to three identities, and a
+        mid-turn failover where the second provider spelled it differently could
+        run a non-idempotent action twice.
+
+        So the schema is applied FIRST, and its output is what is fingerprinted
+        AND what is handed to the executor. The two can no longer disagree.
+
+        A call the schema rejects is returned UNCHANGED rather than refused
+        here. ToolExecutor is the authority on refusals: it logs the denial to
+        the audit trail and produces the structured result. Passing the call on
+        keeps that single authority, and costs nothing, because a refused call
+        never executes and never enters the ledger.
+        """
+        registry = getattr(self.tool_executor, "registry", None)
+        entry = registry.get(name) if isinstance(registry, dict) else None
+        schema = entry.get("input_schema") if isinstance(entry, dict) else None
+        if not isinstance(schema, dict):
+            return args
+        try:
+            return schema_validation.normalize_arguments(schema, args)
+        except schema_validation.SchemaValidationError:
+            return args
+
     @classmethod
     def _canonical_arguments(cls, args: dict) -> dict:
         """Normalise arguments so one EFFECT has exactly one ledger identity.
@@ -1522,6 +1556,20 @@ class Brain:
         """A stable identity for "this exact tool call, with these arguments"."""
         return json.dumps({"n": str(name).strip(), "a": cls._canonical_arguments(args)},
                           sort_keys=True, ensure_ascii=False)
+
+    @staticmethod
+    def _replayed(name: str, result: dict) -> dict:
+        """A recorded result, handed back instead of touching Windows again.
+
+        Marked so the answer stays truthful: the model is told this is the
+        result of the execution that already happened, not a second one.
+        """
+        logger.info("Tool %s replayed from this turn's ledger; not executed again", name)
+        replay = dict(result)
+        metadata = dict(replay.get("metadata") or {})
+        metadata["replayed"] = True
+        replay["metadata"] = metadata
+        return replay
 
     async def _run_tool(self, tool_call) -> dict:
         if isinstance(tool_call, dict):
@@ -1581,21 +1629,58 @@ class Brain:
         # touching Windows again. The model still sees a truthful answer; the
         # machine is only acted on once. The ledger is per turn, so a genuine
         # second request in a later turn is unaffected.
+        #
+        # "Identical" is decided on the EFFECTIVE call -- the arguments after
+        # the registered schema has been applied -- not on the JSON the provider
+        # happened to emit. Otherwise `{"delta": 10}` and `{"delta": "10.0"}`,
+        # which the handler executes identically, would be two ledger entries
+        # and the volume would move twice across a failover. The same object is
+        # then what the executor runs, so identity and effect cannot drift.
+        args = self._effective_arguments(name, args)
         fingerprint = self._call_fingerprint(name, args)
         cached = self._turn_tool_results.get(fingerprint)
         if cached is not None:
-            logger.info("Tool %s replayed from this turn's ledger; not executed again", name)
-            replay = dict(cached)
-            metadata = dict(replay.get("metadata") or {})
-            metadata["replayed"] = True
-            replay["metadata"] = metadata
-            return replay
+            return self._replayed(name, cached)
 
+        # AND THE SAME CALL TWICE IN ONE ROUND, WHICH IS A DIFFERENT HOLE.
+        #
+        # The ledger above only knows about a call that has FINISHED. A model
+        # may emit the identical tool call twice in a single response -- a
+        # well-documented parallel-tool-calling failure -- and `_tool_rounds`
+        # hands the whole batch to `asyncio.gather`. Both copies then passed the
+        # lookup above before either had written anything to it, and the machine
+        # was acted on twice. Provider failover was never involved.
+        #
+        # So a call is entered in the ledger as IN FLIGHT before it is awaited,
+        # and an identical call that arrives while it is running waits for that
+        # one instead of starting a second. This is safe without a lock: the
+        # check and the insert below happen with no `await` between them, and
+        # asyncio runs them on one thread.
+        #
+        # The in-flight entry is removed when the call finishes, whatever the
+        # outcome. It must NOT become a second, longer-lived cache: a refusal
+        # has to stay retryable later in the turn, which is why only a success
+        # is written to `_turn_tool_results`.
+        pending = self._turn_tool_inflight.get(fingerprint)
+        if pending is not None:
+            logger.info("Tool %s is already running in this round; waiting for it", name)
+            return self._replayed(name, await asyncio.shield(pending))
+
+        running: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._turn_tool_inflight[fingerprint] = running
+        # Pre-set so that a CANCELLED call still resolves its waiter. A waiter
+        # left awaiting a future nobody resolves would hang the whole turn.
+        result: dict = {"ok": False, "error": "tool_cancelled"}
         try:
-            result = await self.tool_executor.execute_tool_async(name, args)
-        except Exception:
-            logger.exception("Tool %s lançou uma exceção", name)
-            return {"ok": False, "error": "tool_exception"}
+            try:
+                result = await self.tool_executor.execute_tool_async(name, args)
+            except Exception:
+                logger.exception("Tool %s lançou uma exceção", name)
+                result = {"ok": False, "error": "tool_exception"}
+        finally:
+            self._turn_tool_inflight.pop(fingerprint, None)
+            if not running.done():
+                running.set_result(result)
 
         # Only a genuine execution is remembered. A refusal or a validation
         # error must be retryable -- the user may approve on a second ask.

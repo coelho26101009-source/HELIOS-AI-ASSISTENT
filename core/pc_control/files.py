@@ -58,6 +58,9 @@ _KNOWN_FOLDERS: dict[str, tuple[str, ...]] = {
 #: Where file.search looks when the user does not say otherwise. Deliberately
 #: three user folders, never C:\.
 DEFAULT_SEARCH_FOLDERS = ("Desktop", "Documents", "Downloads")
+#: How many hits a search with no `max_results` returns. Declared in the
+#: tool schema too, so omitted and explicit are one execution identity.
+DEFAULT_FILE_RESULTS = 20
 
 MAX_SEARCH_SECONDS = 8.0
 MAX_SEARCH_DEPTH = 6
@@ -163,13 +166,13 @@ def _search_roots(roots: list[str] | None) -> list[Path]:
 
 
 def search_files(query: str, *, roots: list[str] | None = None,
-                 max_results: int = 20) -> dict:
+                 max_results: int = DEFAULT_FILE_RESULTS) -> dict:
     """Find files by name under bounded roots. Metadata only, never contents."""
     needle = str(query or "").strip().casefold()
     if not needle:
         raise PCControlError("invalid_input", "É preciso dizer o que procurar.")
 
-    limit = max(1, min(int(max_results or 20), MAX_FILE_RESULTS))
+    limit = max(1, min(int(max_results or DEFAULT_FILE_RESULTS), MAX_FILE_RESULTS))
     started = time.monotonic()
     results: list[dict] = []
     scanned = 0

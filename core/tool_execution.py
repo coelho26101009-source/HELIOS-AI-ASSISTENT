@@ -33,6 +33,7 @@ from core.execution_scope import (
 )
 from core.permission_manager import PermissionManager
 from core.policy_engine import RiskLevel
+from core.schema_validation import SchemaValidationError, normalize_arguments
 from core.trust import TrustLevel, classify_external, is_untrusted_capability
 
 
@@ -471,19 +472,33 @@ class ToolExecutor:
     def _validate_arguments(self, name: str, tool: dict, args: dict) -> tuple[dict, dict]:
         """Validate and rewrite tool arguments centrally.
 
-        Path arguments are resolved to absolute, symlink-resolved paths and
+        Two things happen, in this order, and both happen before the policy
+        engine sees anything.
+
+        First the arguments are checked against the tool's REGISTERED SCHEMA and
+        rewritten into their canonical form: ``"10"``, ``10.0`` and ``10`` for an
+        integer property all become ``10``. This is the authority for that --
+        ``Brain`` normalises the same way to build its ledger key, but a caller
+        that reaches the executor directly (the background worker, the desktop
+        bridge) is validated here and nowhere else. A schema violation raises,
+        which fails the call closed before any handler runs.
+
+        Then path arguments are resolved to absolute, symlink-resolved paths and
         written back into the argument dict, so handlers — including plugin
         handlers that were never written defensively — only ever receive a path
         that this authority already approved. Returns the prepared arguments and
         the execution context handed to the policy engine.
         """
-        prepared = dict(args)
         # `_pc_target` is the authoritative permission target, written below and
         # read first by PermissionManager._resolve_target. Any value the MODEL
-        # supplied under that name is discarded here, before anything reads it,
-        # so a crafted argument cannot rebind a grant to a harmless-looking
-        # string while the call does something else.
-        prepared.pop("_pc_target", None)
+        # supplied under that name is discarded (by normalize_arguments, which
+        # lists it in RESERVED_KEYS) before anything reads it, so a crafted
+        # argument cannot rebind a grant to a harmless-looking string while the
+        # call does something else.
+        try:
+            prepared = normalize_arguments(tool.get("input_schema"), args)
+        except SchemaValidationError as exc:
+            raise ToolExecutionError(str(exc)) from None
         context: dict[str, Any] = {"tool": name}
         scopes: list[Scope] = []
         protected = False
@@ -580,7 +595,17 @@ class ToolExecutor:
             prepared, context = self._validate_arguments(name, tool, args)
         except ToolExecutionError as exc:
             self.permission_manager.log_decision(capability, "deny", risk=tool.get("risk"), task_id=task_id, reason=f"Argument validation failed: {exc}", event_name="PermissionDenied")
-            return {"ok": False, "result": self._tool_result(False, "invalid_input", error=str(exc), metadata={"tool": name, "task_id": task_id})}
+            # The OUTPUT carries the same shape a narrow handler's own refusal
+            # carries (core.pc_control.results.fail), because a caller must not
+            # have to know WHICH layer refused in order to read the refusal.
+            # Central schema validation now rejects some calls the handler used
+            # to reject itself, and that must not change what the result looks
+            # like.
+            return {"ok": False, "result": self._tool_result(
+                False, "invalid_input", error=str(exc),
+                output={"ok": False, "status": "invalid_input",
+                        "error": "invalid_input", "message": str(exc)},
+                metadata={"tool": name, "task_id": task_id})}
 
         # Re-resolve the capability now that arguments are normalised, so that
         # system_files(operation="delete") is gated as a delete, not a write.

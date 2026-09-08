@@ -240,6 +240,10 @@ def press_media(name) -> dict:
 
 
 MAX_SCROLL_CLICKS = 20
+#: What "faz scroll para baixo" means when the caller names no amount.
+#: Declared in the tool schema too, so that an omitted `clicks` and an
+#: explicit `clicks: 3` are ONE execution identity rather than two.
+DEFAULT_SCROLL_CLICKS = 3
 
 
 def _clicks(value) -> int:
@@ -276,6 +280,7 @@ def scroll(clicks, *, horizontal: bool = False) -> dict:
 
 
 __all__ = [
+    "DEFAULT_SCROLL_CLICKS",
     "DESTRUCTIVE_KEYS",
     "HOTKEY_ALLOWLIST",
     "KEY_ALLOWLIST",
