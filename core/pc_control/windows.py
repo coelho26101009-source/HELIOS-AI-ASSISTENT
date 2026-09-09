@@ -256,7 +256,7 @@ def close(hwnd: int) -> dict:
     the window we asked to close -- ours is gone, and that counts as closed.
     """
     title = clamp_text(winapi.window_title(hwnd), 200)
-    owner_pid = winapi.window_pid(hwnd)
+    owner_pid = _safe_window_pid(hwnd)
     if not winapi.post_close(hwnd):
         raise PCControlError("close_failed", f"Não foi possível pedir o fecho de '{title}'.")
 
@@ -274,15 +274,56 @@ def close(hwnd: int) -> dict:
     }
 
 
+def _safe_window_pid(hwnd: int) -> int:
+    """``winapi.window_pid``, defensively, for the ONE call that has no
+    ``except`` of its own to fall into: the owner captured before the close
+    request is even sent. ``0`` means "could not be read", and it is a safe
+    sentinel here specifically because ``_still_our_window`` treats a falsy
+    ``owner_pid`` as "no identity to check this whole close, trust ``IsWindow``
+    alone" -- exactly the pre-hardening behaviour, and exactly what a failed
+    read at this point should degrade to.
+
+    THIS IS NOT REUSED FOR THE IN-POLL RE-CHECK, AND THAT IS DELIBERATE. A
+    poll-time read failure needs a DIFFERENT fallback: "unknown this instant,
+    keep trusting IsWindow for this poll" -- not "treat as pid 0", which would
+    then compare unequal to a real ``owner_pid`` and read as a mismatch,
+    misfiring the recycled-handle branch on an ordinary transient failure. An
+    earlier version of this function tried to serve both call sites and
+    produced exactly that bug: a failed re-check was indistinguishable from a
+    genuinely different owner, so `_still_our_window` reported the window
+    closed after one flaky read instead of continuing to poll. Two call
+    sites, two correct fallbacks -- see ``_still_our_window`` below for the
+    other one.
+
+    Reading the owning process can fail for reasons that have nothing to do
+    with the window itself -- off Windows, ``winapi._user32()`` reaches for
+    ``ctypes.windll``, which does not exist there. That is not hypothetical:
+    ``tests/test_pc_control_v2.py`` deliberately drives this exact function
+    on Linux, with ``winapi.IS_WINDOWS`` forced ``True`` and only
+    ``post_close`` / ``is_window`` / ``window_title`` mocked, precisely to
+    prove PC Control never reaches a process-termination primitive. A PID
+    lookup that raises must not block that request from being made, or from
+    being verified by the handle check alone.
+    """
+    try:
+        return winapi.window_pid(hwnd)
+    except Exception:
+        logger.debug("could not read window owner before requesting close", exc_info=True)
+        return 0
+
+
 def _still_our_window(hwnd: int, owner_pid: int) -> bool:
     """Whether ``hwnd`` is still a live handle to the SAME window we closed.
 
     ``False`` means "treat as closed", for two different reasons: the handle
     is dead (the ordinary case), or it is alive but answers for a different
     process now (a recycled integer -- see ``close`` above). If the owning
-    process cannot be read, the handle check alone decides; that is the
-    original, simpler behaviour, and it is the safe fallback because a false
-    ``True`` here only costs one more poll interval, not a wrong verdict.
+    process cannot be read here -- or was never readable, see
+    ``_safe_window_pid`` -- the handle check alone decides for THIS poll; a
+    read failure is evidence of nothing, and must not be read as a mismatch.
+    That is the original, simpler behaviour, and it is the safe fallback
+    because a false ``True`` here only costs one more poll interval, not a
+    wrong verdict.
     """
     if not winapi.is_window(hwnd):
         return False

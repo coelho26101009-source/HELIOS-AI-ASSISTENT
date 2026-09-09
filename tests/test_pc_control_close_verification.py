@@ -198,24 +198,78 @@ def test_the_recycled_handle_guard_does_not_fire_on_the_real_windows_pid(monkeyp
     assert clock.now == pytest.approx(DEADLINE)
 
 
-def test_an_unreadable_owner_pid_falls_back_to_the_handle_check_alone(monkeypatch, clock):
-    """If the owning process cannot be determined (``window_pid`` raises),
-    the original, simpler behaviour must still hold: trust ``IsWindow``."""
-    calls = {"n": 0}
+def test_an_unreadable_initial_owner_pid_still_lets_close_proceed(monkeypatch, clock):
+    """The exact shape of a real regression, not a hypothetical one.
+
+    ``close()`` used to call ``winapi.window_pid`` for the INITIAL owner
+    capture *outside* the defensive fallback that protects every later
+    re-check -- so a read that fails before the loop even starts used to
+    raise straight out of ``close()`` instead of degrading to the
+    ``IsWindow``-only behaviour ``_still_our_window`` already knew how to do.
+    That is precisely what happened off Windows: ``tests/test_pc_control_v2.py``
+    drives this function with ``winapi.IS_WINDOWS`` forced ``True`` and
+    ``post_close`` / ``is_window`` / ``window_title`` mocked, and
+    ``winapi.window_pid`` reaches ``ctypes.windll``, which does not exist on
+    Linux -- an ``AttributeError`` on the very first call, before ``post_close``
+    is ever reached.
+
+    A PID that cannot be read is not a reason to refuse a legitimate close
+    request, so this also proves WM_CLOSE still gets posted.
+    """
+    def always_raises(_hwnd: int) -> int:
+        raise AttributeError("module 'ctypes' has no attribute 'windll'")
+
+    post_close_calls = {"n": 0}
+
+    def counting_post_close(_hwnd: int) -> bool:
+        post_close_calls["n"] += 1
+        return True
+
+    monkeypatch.setattr(windows.winapi, "window_pid", always_raises)
+    monkeypatch.setattr(windows.winapi, "is_window", lambda _h: False)
+    monkeypatch.setattr(windows.winapi, "window_title", lambda _h: "Alvo")
+    monkeypatch.setattr(windows.winapi, "post_close", counting_post_close)
+
+    result = windows.close(555)
+
+    assert result["closed"] is True  # IsWindow alone was enough to decide
+    assert post_close_calls["n"] == 1  # and the close request was still made
+
+
+def test_a_poll_time_pid_read_failure_does_not_break_the_fallback(monkeypatch, clock):
+    """The other half of the same contract: the INITIAL read succeeds, but a
+    LATER re-check during the poll raises. ``_still_our_window`` must fall
+    back to ``IsWindow`` alone for that poll too -- the same helper backs both
+    the initial capture and every re-check, so there is one fallback, not two
+    that could drift apart.
+    """
+    is_window_script = [True, True, False]
+    calls = {"is_window": 0, "pid": 0}
+
+    def scripted_is_window(_hwnd: int) -> bool:
+        index = min(calls["is_window"], len(is_window_script) - 1)
+        calls["is_window"] += 1
+        return is_window_script[index]
 
     def flaky_pid(_hwnd: int) -> int:
-        calls["n"] += 1
-        if calls["n"] == 1:
+        calls["pid"] += 1
+        if calls["pid"] == 1:
             return ORIGINAL_PID  # the owner capture in close(), before post_close
-        raise OSError("simulated failure reading the owning process")
+        raise OSError("simulated failure reading the owning process mid-poll")
 
+    monkeypatch.setattr(windows.winapi, "is_window", scripted_is_window)
     monkeypatch.setattr(windows.winapi, "window_pid", flaky_pid)
-    monkeypatch.setattr(windows.winapi, "is_window", lambda _h: False)
     monkeypatch.setattr(windows.winapi, "window_title", lambda _h: "Alvo")
     monkeypatch.setattr(windows.winapi, "post_close", lambda _h: True)
 
     result = windows.close(555)
-    assert result["closed"] is True  # IsWindow alone was enough to decide
+
+    assert result["closed"] is True
+    # Two polls where IsWindow was still True and the pid re-check raised on
+    # both -- correctly ignored rather than aborting the wait -- before
+    # IsWindow itself reports the window gone on the third check.
+    assert calls["pid"] == 3  # 1 initial capture + 2 raising re-checks
+    assert clock.now == pytest.approx(2 * POLL)
 
 
 def test_the_deadline_has_real_headroom_over_the_value_that_flaked_in_ci():
