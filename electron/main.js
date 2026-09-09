@@ -774,9 +774,15 @@ function isAutoLaunchEnabled() {
 
 function setAutoLaunch(enabled) {
   try {
+    // NO `openAsHidden`. It was macOS-only, already deprecated and inert on
+    // macOS 13+, and Electron 44 removed it outright -- from both the
+    // setLoginItemSettings options and the getLoginItemSettings result. On
+    // Windows, the only platform Nano ships on, a hidden start has always
+    // been the `--hidden` argument below, which main() reads into
+    // startedHidden. Dropping it is therefore the same behaviour with a
+    // removed option gone, not a change of behaviour.
     app.setLoginItemSettings({
       openAtLogin: Boolean(enabled),
-      openAsHidden: true,
       args: ['--hidden'],
     });
   } catch (err) {

@@ -12,6 +12,7 @@
     "build:all": "electron-builder --win nsis msi --x64",
     "dev": "electron . --dev",
     "test": "node test/run.js",
+    "fetch-electron": "install-electron",
     "icon": "powershell -ExecutionPolicy Bypass -File ../scripts/build_app_icon.ps1"
   },
   "build": {
@@ -106,7 +107,7 @@
     }
   },
   "devDependencies": {
-    "electron": "^30.0.0",
+    "electron": "^44.2.0",
     "electron-builder": "^24.0.0"
   }
 }

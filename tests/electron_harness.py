@@ -157,7 +157,7 @@ def require_harness() -> None:
     missing = None
     if not ELECTRON_BIN.exists():
         missing = (f"the Electron binary is not installed at {ELECTRON_BIN} "
-                   "(run `npm ci` in electron/)")
+                   "(run `npm ci && npm run fetch-electron` in electron/)")
     elif not (FRONTEND_OUT / "index.html").exists():
         missing = "frontend/out is not built (run `npm run build` in frontend/)"
 

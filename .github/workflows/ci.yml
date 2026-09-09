@@ -125,9 +125,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # NODE 22, NOT 20. electron@44 and its install chain (@electron/get,
+      # @electron-internal/extract-zip) all declare `engines: node >= 22.12.0`.
+      # npm only warns about that, so a Node 20 runner would install and then
+      # fail somewhere less obvious.
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: electron/package-lock.json
 
@@ -156,9 +160,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # NODE 22, NOT 20. electron@44 and its install chain (@electron/get,
+      # @electron-internal/extract-zip) all declare `engines: node >= 22.12.0`.
+      # npm only warns about that, so a Node 20 runner would install and then
+      # fail somewhere less obvious.
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: electron/package-lock.json
 
@@ -179,6 +187,16 @@ jobs:
       - name: Install Electron
         working-directory: electron
         run: npm ci
+
+      # `npm ci` NO LONGER PRODUCES THE BINARY. Electron 42 removed the
+      # postinstall script that used to download it (supply-chain hardening;
+      # see electron/rfcs#22), so node_modules/electron now arrives without a
+      # dist/ and the two steps below -- chowning chrome-sandbox, and every
+      # harness -- would fail on a path that does not exist. This is the
+      # explicit replacement for that postinstall.
+      - name: Fetch the Electron binary
+        working-directory: electron
+        run: npm run fetch-electron
 
       # Electron's SUID sandbox helper has to be root-owned and setuid, and an
       # npm-installed copy is neither. Without this the binary refuses to start

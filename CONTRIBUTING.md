@@ -21,8 +21,10 @@ python -m pip install -r requirements-test.txt   # test-only, no audio/GUI wheel
 # Frontend
 cd frontend && npm ci && npm run build
 
-# Desktop shell
-cd electron && npm ci
+# Desktop shell. `npm ci` no longer brings the Electron binary with it --
+# Electron 42 dropped the postinstall that used to download it -- and the
+# real-Chromium tests (pytest -m chromium) need it, so fetch it explicitly.
+cd electron && npm ci && npm run fetch-electron
 ```
 
 Run it:
