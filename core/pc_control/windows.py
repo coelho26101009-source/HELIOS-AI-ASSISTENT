@@ -33,7 +33,30 @@ _SHELL_CLASSES = frozenset({
 #: How long to wait for an application to honour WM_CLOSE before reporting what
 #: actually happened. Long enough for a normal window to go away, short enough
 #: that a "do you want to save?" dialog does not hold the tool open.
-_CLOSE_OBSERVE_SECONDS = 1.5
+#:
+#: 4.0s, NOT the 1.5s this started at. A plain Win32 window on an ordinary
+#: desktop disappears in well under 100ms — measured here, repeatedly, both
+#: idle and under deliberate CPU load, and CPU load made no measurable
+#: difference. A PACKAGED (UWP) window is a different shape of problem: Windows
+#: hosts it as two processes, `ApplicationFrameHost.exe` owning the visible
+#: frame this module targets and a separate `*.exe` owning the real
+#: `Windows.UI.Core.CoreWindow`, and WM_CLOSE on the frame has to cross that
+#: process boundary and tear down the XAML/DirectComposition surfaces before
+#: the frame itself goes away. That handshake is normally fast too, but it
+#: depends on GPU-accelerated compositing, and CI runs on virtualised hosts
+#: with no hardware GPU, where DirectComposition falls back to a software
+#: rasterizer that is well documented to be markedly slower for exactly this
+#: kind of teardown. Two Windows CI runs failed at this exact step, both
+#: recovered on rerun with no code change, and every step before close --
+#: including minimize and restore, which exercise the very same handle --
+#: passed every time: that pattern is a slow, genuine close racing a
+#: fixed-deadline verification, not a broken close. Calculator is the only
+#: packaged app this suite drives, so it is the only place this shows up, but
+#: the fix is not about Calculator: it is headroom for any window whose close
+#: has to cross a process boundary before the handle dies. See
+#: `tests/test_pc_control_close_verification.py` for the mechanism, proved
+#: without needing a real window.
+_CLOSE_OBSERVE_SECONDS = 4.0
 _CLOSE_POLL_SECONDS = 0.1
 
 
@@ -221,14 +244,25 @@ def close(hwnd: int) -> dict:
     afterwards, that is reported as ``refused``: the application is very likely
     showing a save prompt, and the correct behaviour is to say so, not to
     escalate.
+
+    RECYCLED HANDLES DURING THE POLL. HWND values are reclaimed by Windows
+    once a window is destroyed, and the poll below runs for several seconds --
+    long enough that some other window, on an active desktop, could be created
+    and land on the very integer this one used. ``IsWindow`` only asks "does
+    something answer to this handle right now", so on its own it cannot tell
+    that apart from our window still being open. The owning process id is
+    captured before the close is requested and checked again on every poll: a
+    handle that answers ``True`` but now belongs to a different process is not
+    the window we asked to close -- ours is gone, and that counts as closed.
     """
     title = clamp_text(winapi.window_title(hwnd), 200)
+    owner_pid = winapi.window_pid(hwnd)
     if not winapi.post_close(hwnd):
         raise PCControlError("close_failed", f"Não foi possível pedir o fecho de '{title}'.")
 
     deadline = time.monotonic() + _CLOSE_OBSERVE_SECONDS
     while time.monotonic() < deadline:
-        if not winapi.is_window(hwnd):
+        if not _still_our_window(hwnd, owner_pid):
             return {"closed": True, "title": title}
         time.sleep(_CLOSE_POLL_SECONDS)
 
@@ -238,6 +272,27 @@ def close(hwnd: int) -> dict:
         "detail": ("A aplicação não fechou. Pode estar a perguntar se queres guardar "
                    "o trabalho — o Nano não força o fecho."),
     }
+
+
+def _still_our_window(hwnd: int, owner_pid: int) -> bool:
+    """Whether ``hwnd`` is still a live handle to the SAME window we closed.
+
+    ``False`` means "treat as closed", for two different reasons: the handle
+    is dead (the ordinary case), or it is alive but answers for a different
+    process now (a recycled integer -- see ``close`` above). If the owning
+    process cannot be read, the handle check alone decides; that is the
+    original, simpler behaviour, and it is the safe fallback because a false
+    ``True`` here only costs one more poll interval, not a wrong verdict.
+    """
+    if not winapi.is_window(hwnd):
+        return False
+    if owner_pid:
+        try:
+            if winapi.window_pid(hwnd) != owner_pid:
+                return False
+        except Exception:
+            logger.debug("could not re-check window owner during close poll", exc_info=True)
+    return True
 
 
 # ==========================================================================
