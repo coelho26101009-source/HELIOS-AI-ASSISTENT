@@ -62,6 +62,13 @@ export type ProviderInfo = {
   tiers?: { fast: string; complex: string };
   /** Cloud only: whether each configured tier actually exists on the account. */
   tiers_ok?: { fast: boolean; complex: boolean };
+  /**
+   * Where `model` came from: a stored/shipped setting, a default Nano adopted
+   * from the account's own catalogue because nothing was configured, or
+   * nothing at all. The UI must never render a default as if the user had
+   * picked it.
+   */
+  model_source?: "configured" | "default" | "none";
   /** Live circuit-breaker state, read from memory rather than re-probed. */
   temporarily_limited?: boolean;
   retry_in_seconds?: number | null;

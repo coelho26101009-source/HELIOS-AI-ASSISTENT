@@ -58,7 +58,7 @@ from typing import Any, AsyncIterator, Iterable
 
 import httpx
 
-from core import secret_store
+from core import model_defaults, secret_store
 
 logger = logging.getLogger("nano.mistral")
 
@@ -321,7 +321,11 @@ def test_mistral(api_key: str | None = None) -> dict[str, Any]:
         "detail": f"Ligação estabelecida ({len(ids)} modelos disponíveis).",
         "models": ids,
         "records": records,
-        "suggested_model": ids[0],
+        # THE SAME RULE THE DESCRIBE PATH USES. Two implementations of "which
+        # model should Nano adopt" would drift, and this pair already had:
+        # Settings adopted models[0] while a credential from the environment
+        # never adopted anything at all. See core.model_defaults.
+        "suggested_model": model_defaults.resolve_default(records) or ids[0],
         "latency_ms": latency_ms,
     }
 
@@ -675,6 +679,8 @@ def describe_mistral(configured_model: str = "", complex_model: str = "") -> dic
         "id": "mistral", "name": "Mistral", "kind": "cloud", "role": "cloud",
         "model": fast, "models": [], "records": [], "secret": secret,
         "tiers": {"fast": fast, "complex": strong},
+        "model_source": (model_defaults.SOURCE_CONFIGURED if fast
+                         else model_defaults.SOURCE_NONE),
     }
 
     if not secret["configured"]:
@@ -690,18 +696,29 @@ def describe_mistral(configured_model: str = "", complex_model: str = "") -> dic
         return {**base, "state": state.value, "detail": detail}
 
     ids = model_ids(records)
+    # NOTHING CONFIGURED IS NOT THE SAME AS NOTHING USABLE.
+    #
+    # This branch used to return SETUP_REQUIRED whenever no model was stored,
+    # and SETUP_REQUIRED is what routing reads as "cannot serve a request". A
+    # key supplied through the environment never passes the Settings adoption
+    # rule, so a perfectly good account with twenty-seven chat models was
+    # configured and permanently unroutable. The default now comes from the
+    # account's own catalogue (see core.model_defaults), and it is reported as
+    # a default so the UI never implies the user picked it.
+    fast, strong, source = model_defaults.resolve_tiers(configured_model, complex_model, records)
     if not fast:
-        # Nothing configured yet: report what is available and stay in setup,
-        # rather than adopting a model the user never chose.
         return {**base, "state": ProviderState.SETUP_REQUIRED.value,
                 "models": ids, "records": records,
-                "detail": ("Escolhe um modelo Mistral nas Definições. "
-                           f"Disponíveis: {', '.join(ids[:4])}.")}
+                "model_source": model_defaults.SOURCE_NONE,
+                "detail": ("Nenhum modelo Mistral desta conta serve para o Nano. "
+                           f"Encontrados: {', '.join(ids[:4]) or 'nenhum'}.")}
 
     fast_ok = fast in ids
     strong_ok = strong in ids
+    defaulted = source == model_defaults.SOURCE_DEFAULT
     if fast_ok and strong_ok:
-        detail = f"Pronto. Conversa: '{fast}'. Complexo: '{strong}'."
+        detail = (f"Pronto com o modelo predefinido '{fast}'. Podes escolher outro nas Definições."
+                  if defaulted else f"Pronto. Conversa: '{fast}'. Complexo: '{strong}'.")
     elif fast_ok:
         detail = (f"Conversa pronta com '{fast}'. O modelo complexo '{strong}' não existe "
                   f"nesta conta; pedidos complexos usam '{fast}'.")
@@ -712,9 +729,10 @@ def describe_mistral(configured_model: str = "", complex_model: str = "") -> dic
     return {
         **base,
         "state": ProviderState.READY.value if fast_ok else ProviderState.MODEL_UNAVAILABLE.value,
-        "models": ids, "records": records,
+        "model": fast, "models": ids, "records": records,
         "tiers": {"fast": fast, "complex": strong if strong_ok else fast},
         "tiers_ok": {"fast": fast_ok, "complex": strong_ok},
+        "model_source": source,
         "detail": detail,
     }
 

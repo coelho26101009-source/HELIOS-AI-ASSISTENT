@@ -40,7 +40,8 @@ from typing import Any
 
 import httpx
 
-from core import google_provider, mistral_provider, ollama_service, secret_store
+from core import (google_provider, model_defaults, mistral_provider,
+                  ollama_service, secret_store)
 
 logger = logging.getLogger("nano.providers")
 
@@ -112,14 +113,50 @@ class ProviderId(str, Enum):
 #: has been moved to the front. Adding SambaNova later means adding an id here
 #: and a describe_* function -- nothing in the Brain changes, which is what
 #: adding Mistral demonstrated.
+#:
+#: THIS ORDER IS EVIDENCE, NOT ALPHABET. It used to read (google, groq,
+#: mistral), which is exactly the alphabetical order and was nobody's decision.
+#: The run that produced the current order is committed at
+#: benchmarks/provider_routing/, and tests/test_provider_routing_policy.py
+#: fails if the two stop agreeing -- so this tuple cannot be reordered on a
+#: hunch.
+#:
+#:   groq     the fastest by a factor of two to three (407 ms to first token
+#:            against 938-1484 ms) and the best tool accuracy of the providers
+#:            with broad coverage: 93.8% over 48 of 53 cases.
+#:   mistral  SECOND BECAUSE OF WHAT A FALLBACK IS FOR. It is the only cloud
+#:            provider that completed the whole corpus with no rate-limit
+#:            event at all, and a fallback is reached precisely when the first
+#:            choice has just failed. Its tool accuracy (81.2%) is why it is
+#:            not first.
+#:   google   last, and NOT because it answers badly -- on what it answered it
+#:            scored best. It is last because on this project's credentials it
+#:            mostly could not be asked: four separate rate-limit stops, 17 of
+#:            53 cases measurable, and a fresh 429 on the first request of
+#:            three consecutive retry windows. A hop that is usually
+#:            unavailable spends a round trip and a cooldown to achieve
+#:            nothing. That is a fact about a free tier on one day, not a claim
+#:            about Gemini, and the artifact says so.
+#:
+#: Ollama is not in this tuple and is not ranked by measurement: local is the
+#: terminal hop because it is the privacy fallback and the only provider that
+#: costs the user's own RAM. It answers well (88.7% pass) and takes 19.1 s to
+#: do it, against 0.45 s for Groq.
 CLOUD_PROVIDER_IDS: tuple[str, ...] = (
-    ProviderId.GOOGLE.value, ProviderId.GROQ.value, ProviderId.MISTRAL.value,
+    ProviderId.GROQ.value, ProviderId.MISTRAL.value, ProviderId.GOOGLE.value,
 )
 
 #: Which cloud provider AUTO and CLOUD prefer when the user has expressed no
 #: choice. Groq, deliberately: it is the measured baseline this account has
 #: been running on, and a new provider does not become the default until a
-#: benchmark says it earned it.
+#: benchmark says it earned it. The 2026-09-09 run reaffirmed it rather than
+#: changing it.
+#:
+#: Stated separately from CLOUD_PROVIDER_IDS[0] rather than derived from it,
+#: because they answer different questions -- "who goes first when nobody
+#: chose" and "who follows whoever did" -- and a derivation would let a
+#: reordering of the fallback chain silently move the default. They must
+#: nevertheless agree, and a test asserts that they do.
 DEFAULT_CLOUD_PROVIDER = ProviderId.GROQ.value
 
 #: Human names, for sentences shown to the user.
@@ -148,6 +185,20 @@ def parse_preferred_cloud(value: Any) -> str:
 # --------------------------------------------------------------------------
 # Groq
 # --------------------------------------------------------------------------
+
+def _model_source(model: Any) -> str:
+    """Where a payload's model came from, in the shared vocabulary.
+
+    Groq and Ollama read their model from configuration, which on a fresh
+    install is a value the project shipped rather than one the user picked --
+    hence "configured" and never "user". Google and Mistral may additionally
+    report ``default`` when :mod:`core.model_defaults` adopted one from the
+    account's own catalogue; the field exists on every provider payload so the
+    UI reads one shape.
+    """
+    return (model_defaults.SOURCE_CONFIGURED if str(model or "").strip()
+            else model_defaults.SOURCE_NONE)
+
 
 def groq_api_key() -> str:
     return secret_store.get_secret(GROQ_SECRET_NAME)
@@ -214,7 +265,11 @@ def test_groq(api_key: str | None = None) -> dict[str, Any]:
         "ok": True,
         "detail": f"Ligação estabelecida ({len(models)} modelos disponíveis).",
         "models": models,
-        "suggested_model": models[0],
+        # THE SAME RULE THE DESCRIBE PATH USES. Two implementations of "which
+        # model should Nano adopt" would drift, and this pair already had:
+        # Settings adopted models[0] while a credential from the environment
+        # never adopted anything at all. See core.model_defaults.
+        "suggested_model": model_defaults.resolve_default(models) or models[0],
         "latency_ms": latency_ms,
     }
 
@@ -235,6 +290,7 @@ def describe_groq(configured_model: str = "", complex_model: str = "") -> dict[s
             "id": "groq", "name": "Groq", "kind": "cloud", "role": "primary",
             "state": ProviderState.SETUP_REQUIRED.value,
             "model": fast, "models": [], "secret": secret, "tiers": tiers,
+            "model_source": _model_source(fast),
             "detail": "Adiciona uma chave de API do Groq nas Definições para usar a cloud.",
         }
 
@@ -250,6 +306,7 @@ def describe_groq(configured_model: str = "", complex_model: str = "") -> dict[s
             "id": "groq", "name": "Groq", "kind": "cloud", "role": "primary",
             "state": state.value, "model": fast, "models": [],
             "secret": secret, "tiers": tiers, "detail": detail,
+            "model_source": _model_source(fast),
         }
 
     # Both tiers are validated against the account. A configured model that no
@@ -277,6 +334,7 @@ def describe_groq(configured_model: str = "", complex_model: str = "") -> dict[s
         "model": fast, "models": models, "secret": secret,
         "tiers": {"fast": fast, "complex": strong if strong_ok else fast},
         "tiers_ok": {"fast": fast_ok, "complex": strong_ok},
+        "model_source": _model_source(fast),
         "detail": detail,
     }
 
@@ -299,6 +357,7 @@ def describe_ollama(model: str, base_url: str, *, local_enabled: bool = True) ->
         "id": "ollama", "name": "Ollama", "kind": "local", "role": "fallback",
         "state": state.value, "model": status["model"], "models": status.get("installed", []),
         "secret": {"configured": True, "masked": "", "source": "none", "encrypted": False},
+        "model_source": _model_source(status["model"]),
         "detail": status.get("detail", ""),
         "url": status.get("url", base_url),
     }

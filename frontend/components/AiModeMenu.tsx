@@ -183,7 +183,14 @@ function providerHint(info?: ProviderInfo): string {
   }
   switch (info.state) {
     case "READY": return "Configurado";
-    case "SETUP_REQUIRED": return "Falta a chave de API";
+    // SETUP_REQUIRED NO LONGER MEANS ONE THING. It is "no key" and also "a
+    // valid key whose account offers nothing Nano can use" -- two different
+    // problems with two different fixes. Reading secret.configured is what
+    // stops Nano telling somebody to paste a key they already pasted.
+    case "SETUP_REQUIRED":
+      return info.secret?.configured
+        ? "Sem modelo utilizável nesta conta"
+        : "Falta a chave de API";
     case "MODEL_UNAVAILABLE": return "Modelo indisponível nesta conta";
     case "ERROR": return "Chave recusada";
     case "UNAVAILABLE": return "Sem ligação";

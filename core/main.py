@@ -3233,13 +3233,29 @@ def main():
     # With a second provider that becomes a claim about state it never checked:
     # a machine configured only for Gemini would announce a Groq model it
     # cannot use. Each provider is reported from its own live flag.
+    # "sem modelo escolhido" WAS TRUE AND IS NOT ANY MORE.
+    #
+    # It meant "unusable", because a provider with no stored model reported
+    # SETUP_REQUIRED and never routed. It now resolves one from the account's
+    # own catalogue (see core.model_defaults), so printing the old phrase on a
+    # startup banner -- where every other line reports readiness -- would tell
+    # the user a provider is unavailable while the router is routing to it.
+    #
+    # The banner reads CONFIGURATION and not the live snapshot on purpose:
+    # describing three cloud providers is three blocking HTTP calls, and paying
+    # them here would add up to thirty seconds to every start. So it names the
+    # MECHANISM, which is true without a probe, and Settings shows the model
+    # that was actually adopted.
+    def _startup_model(model: str) -> str:
+        return model or "predefinido da conta"
+
     _configured = []
     if brain.groq_enabled:
         _configured.append(f"Groq/{brain.groq_fast_model}")
     if brain.google_enabled:
-        _configured.append(f"Google/{brain.google_fast_model or 'sem modelo escolhido'}")
+        _configured.append(f"Google/{_startup_model(brain.google_fast_model)}")
     if brain.mistral_enabled:
-        _configured.append(f"Mistral/{brain.mistral_fast_model or 'sem modelo escolhido'}")
+        _configured.append(f"Mistral/{_startup_model(brain.mistral_fast_model)}")
     _report("Cloud", "OK" if _configured else "NOT CONFIGURED",
             f"preferido: {current_preferred_cloud()} | " + ", ".join(_configured)
             if _configured else "")

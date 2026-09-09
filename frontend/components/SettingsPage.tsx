@@ -245,7 +245,12 @@ function cloudStateHint(info?: ProviderInfo): string {
   if (info.temporarily_limited) return "Limite temporário atingido";
   switch (info.state) {
     case "READY": return "Configurado";
-    case "SETUP_REQUIRED": return "Falta a chave";
+    // SETUP_REQUIRED NO LONGER MEANS ONE THING. It is "no key" and also "a
+    // valid key whose account offers nothing Nano can use" -- two different
+    // problems with two different fixes. Reading secret.configured is what
+    // stops Nano telling somebody to paste a key they already pasted.
+    case "SETUP_REQUIRED":
+      return info.secret?.configured ? "Sem modelo utilizável" : "Falta a chave";
     case "MODEL_UNAVAILABLE": return "Modelo indisponível";
     case "ERROR": return "Chave recusada";
     case "UNAVAILABLE": return "Sem ligação";

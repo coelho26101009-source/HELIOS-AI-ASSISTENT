@@ -38,7 +38,7 @@ from typing import Any, AsyncIterator, Iterable
 
 import httpx
 
-from core import secret_store
+from core import model_defaults, secret_store
 
 logger = logging.getLogger("nano.google")
 
@@ -350,7 +350,11 @@ def test_google(api_key: str | None = None) -> dict[str, Any]:
         "detail": f"Ligação estabelecida ({len(ids)} modelos disponíveis).",
         "models": ids,
         "records": records,
-        "suggested_model": ids[0],
+        # THE SAME RULE THE DESCRIBE PATH USES. Two implementations of "which
+        # model should Nano adopt" would drift, and this pair already had:
+        # Settings adopted models[0] while a credential from the environment
+        # never adopted anything at all. See core.model_defaults.
+        "suggested_model": model_defaults.resolve_default(records) or ids[0],
         "latency_ms": latency_ms,
     }
 
@@ -755,6 +759,8 @@ def describe_google(configured_model: str = "", complex_model: str = "") -> dict
         "id": "google", "name": "Google", "kind": "cloud", "role": "cloud",
         "model": fast, "models": [], "records": [], "secret": secret,
         "tiers": {"fast": fast, "complex": strong},
+        "model_source": (model_defaults.SOURCE_CONFIGURED if fast
+                         else model_defaults.SOURCE_NONE),
     }
 
     if not secret["configured"]:
@@ -770,17 +776,27 @@ def describe_google(configured_model: str = "", complex_model: str = "") -> dict
         return {**base, "state": state.value, "detail": detail}
 
     ids = model_ids(records)
+    # A KEY WITH NO MODEL IS NOT THE SAME AS NO KEY, and this branch used to
+    # report both as SETUP_REQUIRED -- which routing reads as "cannot serve a
+    # request". A credential that arrived through the environment never passes
+    # the Settings adoption rule, so the provider stayed unroutable forever.
+    # The default is resolved from the account's own catalogue instead (see
+    # core.model_defaults) and reported AS a default, so nothing implies the
+    # user chose it.
+    fast, strong, source = model_defaults.resolve_tiers(configured_model, complex_model, records)
     if not fast:
-        # Nothing configured yet: report what is available and stay in setup,
-        # rather than adopting a model the user never chose.
         return {**base, "state": ProviderState.SETUP_REQUIRED.value,
                 "models": ids, "records": records,
-                "detail": f"Escolhe um modelo Google nas Definições. Disponíveis: {', '.join(ids[:4])}."}
+                "model_source": model_defaults.SOURCE_NONE,
+                "detail": ("Nenhum modelo Google desta conta serve para o Nano. "
+                           f"Encontrados: {', '.join(ids[:4]) or 'nenhum'}.")}
 
     fast_ok = fast in ids
     strong_ok = strong in ids
+    defaulted = source == model_defaults.SOURCE_DEFAULT
     if fast_ok and strong_ok:
-        detail = f"Pronto. Conversa: '{fast}'. Complexo: '{strong}'."
+        detail = (f"Pronto com o modelo predefinido '{fast}'. Podes escolher outro nas Definições."
+                  if defaulted else f"Pronto. Conversa: '{fast}'. Complexo: '{strong}'.")
     elif fast_ok:
         detail = (f"Conversa pronta com '{fast}'. O modelo complexo '{strong}' não existe "
                   f"nesta conta; pedidos complexos usam '{fast}'.")
@@ -791,9 +807,10 @@ def describe_google(configured_model: str = "", complex_model: str = "") -> dict
     return {
         **base,
         "state": ProviderState.READY.value if fast_ok else ProviderState.MODEL_UNAVAILABLE.value,
-        "models": ids, "records": records,
+        "model": fast, "models": ids, "records": records,
         "tiers": {"fast": fast, "complex": strong if strong_ok else fast},
         "tiers_ok": {"fast": fast_ok, "complex": strong_ok},
+        "model_source": source,
         "detail": detail,
     }
 

@@ -44,7 +44,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from core import providers
+from core import model_defaults, providers
 
 logger = logging.getLogger("nano.provider_status")
 
@@ -168,6 +168,11 @@ def _disabled(provider_id: str, model: str, detail: str,
         "model": model, "models": [], "records": [],
         "secret": {"configured": False, "masked": "", "source": "none", "encrypted": False},
         "tiers": {"fast": model, "complex": complex_model or model},
+        # The model this provider WOULD use, reported with the same vocabulary
+        # as a live payload so the UI never has to special-case a mode it was
+        # not allowed to probe in.
+        "model_source": (model_defaults.SOURCE_CONFIGURED if str(model or "").strip()
+                         else model_defaults.SOURCE_NONE),
         "detail": detail,
     }
     if url:

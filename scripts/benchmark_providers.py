@@ -77,8 +77,12 @@ try:
 except ImportError:                                # pragma: no cover - optional
     pass
 
+import httpx                                                              # noqa: E402
+
 from core import (brain, capabilities, google_provider, mistral_provider,     # noqa: E402
                   model_selection, providers, secret_store)
+from core import ollama_service                                           # noqa: E402
+from core.config import load_config                                       # noqa: E402
 from core.brain import base_system_sections                                   # noqa: E402
 from core.plugin_loader import get_all_tools, load_all_plugins                # noqa: E402
 from core.trust import TRUST_BOUNDARY_SYSTEM_RULES                            # noqa: E402
@@ -349,6 +353,72 @@ async def run_mistral(model: str, case: Case, tools: list[dict],
     return _finish(result, collector, pieces, started, case)
 
 
+async def run_ollama(model: str, case: Case, tools: list[dict]) -> Result:
+    """One case against one LOCAL model, shaped exactly as the Brain shapes it.
+
+    WHY THE LOCAL MODEL IS IN A PROVIDER BENCHMARK AT ALL
+    ------------------------------------------------------
+    Ollama is the last hop of the AUTO chain, and "every enabled provider is
+    genuinely usable" is a claim about it too. Its POSITION in the order is not
+    up for measurement -- local is last because it is the privacy fallback and
+    the only one that costs the user's own RAM -- but whether it can actually
+    answer a Nano turn is, and that had never been measured beside the cloud
+    providers.
+
+    NOT STREAMED, AND THAT IS FIDELITY RATHER THAN LAZINESS.
+    ``Brain._ollama_fallback`` posts ``stream: false`` for the round that
+    carries tools, so streaming here would measure a request Nano never makes.
+    The cost is that time-to-first-token does not exist for this transport, so
+    it is reported as None and the table prints an em dash. A latency number
+    invented to fill a column is worse than an absent one.
+    """
+    result = Result(case.id, case.category, "ollama", model, ok=False)
+    local_cfg = (load_config().get("local") or {})
+    base_url = str(local_cfg.get("url") or "http://127.0.0.1:11434").rstrip("/")
+    system = system_prompt_for(case, bool(tools))
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages_for(case, system),
+        "stream": False,
+        "options": {"temperature": 0.65,
+                    "num_ctx": max(1024, int(local_cfg.get("max_context", 4096)))},
+    }
+    if tools:
+        payload["tools"] = tools
+
+    collector: dict = {"tool_calls": []}
+    pieces: list[str] = []
+    started = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
+            response = await client.post(f"{base_url}/api/chat", json=payload)
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:                       # noqa: BLE001 - reported, not raised
+        from core.provider_failures import classify
+
+        failure = classify(exc, provider="ollama")
+        result.error = failure.message[:300]
+        result.failure_type = failure.type.value
+        result.total_ms = int((time.monotonic() - started) * 1000)
+        return result
+
+    message = data.get("message") or {}
+    text = str(message.get("content") or "")
+    if text:
+        pieces.append(text)
+    # Ollama already decodes `function.arguments` into a map; _finish accepts
+    # either shape, so nothing is re-encoded just to be parsed again.
+    for call in (message.get("tool_calls") or []):
+        function = (call or {}).get("function") or {}
+        if function.get("name"):
+            collector["tool_calls"].append({"name": str(function["name"]),
+                                            "args": function.get("arguments") or {}})
+    collector["usage"] = {"prompt_tokens": data.get("prompt_eval_count"),
+                          "completion_tokens": data.get("eval_count")}
+    return _finish(result, collector, pieces, started, case)
+
+
 def _finish(result: Result, collector: dict, pieces: list[str],
             started: float, case: Case) -> Result:
     """Score one completed exchange. Shared so both providers grade identically."""
@@ -416,6 +486,8 @@ async def run_model(spec: str, cases: list[Case], budget: Budget,
             result = await run_groq(model, case, tools)
         elif provider_id == "mistral":
             result = await run_mistral(model, case, tools, records.get("mistral", {}))
+        elif provider_id == "ollama":
+            result = await run_ollama(model, case, tools)
         else:
             raise SystemExit(f"unknown provider in --models: {spec!r}")
         results.append(result)
@@ -752,6 +824,21 @@ def list_models() -> int:
                 flags.append(f"ctx {record['input_tokens']}")
             print(f"  mistral:{record['id']:45} {record['display_name']}"
                   + (f"   [{', '.join(flags)}]" if flags else ""))
+
+    # The local models, listed from the machine rather than from an account.
+    # ollama_service.describe already knows how to ask and how to stay quiet
+    # when the server is not running, so no second probe is written here.
+    local_cfg = (load_config().get("local") or {})
+    local = ollama_service.describe(str(local_cfg.get("model") or "auto"),
+                                    str(local_cfg.get("url") or "http://127.0.0.1:11434"))
+    installed = local.get("installed") or []
+    print()
+    if not installed:
+        print(f"Ollama: {local.get('detail') or 'sem modelos instalados'}")
+    else:
+        print(f"Ollama ({len(installed)} modelos instalados):")
+        for model in installed:
+            print(f"  ollama:{model}")
     return 0
 
 
