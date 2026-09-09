@@ -34,6 +34,9 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..', '..');   // electron/test -> repo root
 const OUT_DIR = path.join(ROOT, 'frontend', 'out');
+/* Every request URL is mapped to a file by ONE shared, contained resolver;
+   see lib/static-root.js for the three barriers it enforces. */
+const { resolveStaticPath } = require('./lib/static-root');
 const { watchdog } = require('./lib/watchdog');
 
 /* A deadline, not a tuning knob: a healthy run of this harness was
@@ -52,9 +55,8 @@ const MIME = {
 function serve() {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
-      let rel = decodeURIComponent(req.url.split('?')[0]);
-      if (rel === '/') rel = '/index.html';
-      let file = path.join(OUT_DIR, rel);
+      let file = resolveStaticPath(OUT_DIR, req.url);
+      if (file === null) { res.writeHead(404); res.end('not found'); return; }
       if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) {
         const html = file + '.html';
         file = fs.existsSync(html) ? html : path.join(OUT_DIR, 'index.html');

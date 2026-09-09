@@ -34,6 +34,9 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..', '..');
 const OUT_DIR = path.join(ROOT, 'frontend', 'out');
+/* Every request URL is mapped to a file by ONE shared, contained resolver;
+   see lib/static-root.js for the three barriers it enforces. */
+const { resolveStaticPath } = require('./lib/static-root');
 const PRELOAD = path.join(__dirname, '..', 'preload.js');
 
 /* ── The stub bridge ─────────────────────────────────────────────────────
@@ -163,9 +166,8 @@ const PROBE_FOCUS = `(() => {
 function serve() {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
-      const rel = decodeURIComponent(req.url.split('?')[0]).replace(/^\/+/, '') || 'index.html';
-      const file = path.join(OUT_DIR, rel);
-      if (!file.startsWith(OUT_DIR) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+      const file = resolveStaticPath(OUT_DIR, req.url);
+      if (file === null || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
         res.writeHead(404); res.end('not found'); return;
       }
       const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',

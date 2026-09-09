@@ -122,8 +122,9 @@ remove the obligations from third-party dependencies — see
 - [x] CodeQL code scanning enabled (GitHub default setup, weekly plus every
       push and pull request) over Python, JavaScript/TypeScript and Actions.
       First run: no findings in `core/`, `plugins/`, the frontend or the
-      workflows. Its 14 open alerts are all `js/path-injection` in the
-      **Electron test harnesses** — see the note under Continuous integration.
+      workflows. Its only findings were 14 `js/path-injection` alerts in the
+      **Electron test harnesses**, now fixed — see the note under Continuous
+      integration.
 
 ### Electron
 
@@ -175,14 +176,22 @@ remove the obligations from third-party dependencies — see
 - [~] Harness coverage is not total: `csp-check`, `overlay-live` and
       `focus-trap-render` still run only in the manual release gate, and the
       Windows rendering path is not covered by any CI job.
-- [~] **CodeQL's 14 open alerts are all in the harnesses, not in Nano.** Each
-      is `js/path-injection` against the tiny static file server inside
-      `csp-check.js`, `chat-drive.js`, `render-check.js` and
-      `settings-drive.js`, which joins a request path onto the export
-      directory without containing it. All four listen on `127.0.0.1` on an
-      ephemeral port and serve only the harness's own renderer, so nothing
-      shipped is affected -- but the pattern is exactly the path containment
-      Nano requires of itself, and it should be fixed rather than dismissed.
+- [x] **CodeQL's 14 `js/path-injection` alerts were in the harnesses, not in
+      Nano, and are fixed.** Each was against the tiny static file server
+      inside `csp-check.js`, `chat-drive.js`, `render-check.js` and
+      `settings-drive.js`, which joined a request path onto the export
+      directory without containing it. All four listened on `127.0.0.1` on an
+      ephemeral port and served only the harness's own renderer, so nothing
+      shipped was affected -- but the pattern is exactly the path containment
+      Nano requires of itself, so it was fixed rather than dismissed. All six
+      harness servers now resolve request paths through
+      `electron/test/lib/static-root.js`, which refuses traversal, encoded
+      traversal, mixed separators, absolute paths, embedded NULs and malformed
+      encoding BEFORE anything touches the filesystem;
+      `electron/test/static-root.test.js` proves it, partly over a real
+      socket. `focus-trap-render.js` and `memory-render.js` were never flagged
+      but shared the weakness and were converted too. GitHub closes the alerts
+      when it rescans the pushed commit, not before.
 - [ ] Branch protection requiring CI to pass before merge
 
 ## Packaging

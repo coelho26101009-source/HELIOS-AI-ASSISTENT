@@ -30,6 +30,9 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..', '..');
 const OUT_DIR = path.join(ROOT, 'frontend', 'out');
+/* Every request URL is mapped to a file by ONE shared, contained resolver;
+   see lib/static-root.js for the three barriers it enforces. */
+const { resolveStaticPath } = require('./lib/static-root');
 const PRELOAD = path.join(__dirname, '..', 'preload.js');
 const { watchdog } = require('./lib/watchdog');
 
@@ -66,12 +69,15 @@ const MIME = {
 function serve() {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
-      const url = decodeURIComponent((req.url || '/').split('?')[0]);
-      let filePath = path.join(OUT_DIR, url === '/' ? 'index.html' : url);
+      let filePath = resolveStaticPath(OUT_DIR, req.url);
+      if (filePath === null) {
+        res.writeHead(404).end('not found');
+        return;
+      }
       if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
         filePath = path.join(filePath, 'index.html');
       }
-      if (!filePath.startsWith(OUT_DIR) || !fs.existsSync(filePath)) {
+      if (!fs.existsSync(filePath)) {
         res.writeHead(404).end('not found');
         return;
       }
