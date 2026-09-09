@@ -113,7 +113,17 @@ remove the obligations from third-party dependencies — see
       helpers that ran `git`/`pytest` in a caller-supplied directory. Confirmed
       dead via a repository-wide reference audit before deletion.
 - [ ] Independent security review before public beta
-- [ ] Dependency vulnerability scanning (Dependabot or equivalent) enabled
+- [x] Dependency vulnerability scanning enabled. Dependabot alerts and
+      Dependabot security updates are on at the repository level, and
+      `.github/dependabot.yml` schedules weekly version updates for the four
+      dependency roots that exist (`/` for pip, `/frontend`, `/electron`,
+      and the workflows). The dependency graph resolves 346 packages and
+      reports **no open alerts** as of this writing.
+- [x] CodeQL code scanning enabled (GitHub default setup, weekly plus every
+      push and pull request) over Python, JavaScript/TypeScript and Actions.
+      First run: no findings in `core/`, `plugins/`, the frontend or the
+      workflows. Its 14 open alerts are all `js/path-injection` in the
+      **Electron test harnesses** — see the note under Continuous integration.
 
 ### Electron
 
@@ -150,7 +160,11 @@ remove the obligations from third-party dependencies — see
 - [x] Static security gate
 - [x] No secrets required; a fork's PR runs the full suite
 - [x] Least privilege (`contents: read`)
-- [x] Pinned action majors, official actions only
+- [x] Action pinning. `ci.yml` uses official `actions/*` steps on major tags.
+      The single third-party action -- `softprops/action-gh-release` in the
+      manual packaging workflow, and the only step that runs with
+      `contents: write` -- is pinned to an immutable commit SHA rather than a
+      movable tag. Dependabot's github-actions updates keep both current.
 - [x] Dependency caching
 - [x] Packaging workflow made manual-only with an explicit publish opt-in
 - [x] **Render/behaviour harnesses in CI.** The `chromium-ui` job loads the
@@ -161,6 +175,14 @@ remove the obligations from third-party dependencies — see
 - [~] Harness coverage is not total: `csp-check`, `overlay-live` and
       `focus-trap-render` still run only in the manual release gate, and the
       Windows rendering path is not covered by any CI job.
+- [~] **CodeQL's 14 open alerts are all in the harnesses, not in Nano.** Each
+      is `js/path-injection` against the tiny static file server inside
+      `csp-check.js`, `chat-drive.js`, `render-check.js` and
+      `settings-drive.js`, which joins a request path onto the export
+      directory without containing it. All four listen on `127.0.0.1` on an
+      ephemeral port and serve only the harness's own renderer, so nothing
+      shipped is affected -- but the pattern is exactly the path containment
+      Nano requires of itself, and it should be fixed rather than dismissed.
 - [ ] Branch protection requiring CI to pass before merge
 
 ## Packaging

@@ -1,0 +1,91 @@
+# Dependabot version updates.
+#
+# Nano is a desktop assistant that holds an API key and can act on the user's
+# machine, so a stale transitive dependency is a real exposure rather than a
+# tidiness problem. This file covers the FOUR dependency roots the repository
+# actually has -- confirmed against the dependency graph, which resolves 315 npm
+# packages, 20 PyPI packages and 10 actions:
+#
+#   /            requirements.txt, requirements-test.txt, requirements-optional.txt
+#   /frontend    the Next.js renderer
+#   /electron    the desktop shell and its build tooling
+#   /            .github/workflows/*.yml
+#
+# There is no pyproject.toml and no root package.json; adding entries for them
+# would produce "manifest not found" noise rather than updates.
+#
+# Everything here is deliberately WEEKLY and GROUPED. This is a single-maintainer
+# repository: an ungrouped daily schedule across four ecosystems would open more
+# pull requests than one person can review, and unreviewed dependency PRs are
+# worse than none. Security updates are NOT configured here -- they are enabled
+# at the repository level and are not rate-limited by these settings, so a real
+# advisory still gets its own pull request immediately.
+#
+# Dependabot pull requests run the full CI workflow: none of Nano's checks
+# require a secret, so they pass or fail on the same evidence as any other PR.
+version: 2
+
+updates:
+  # ------------------------------------------------------------- GitHub Actions
+  # Keeps the `actions/*` major tags current and moves the SHA-pinned
+  # third-party action in build-windows.yml to a new commit when it is released,
+  # naming the version it is moving to in the pull request body. Without this,
+  # a SHA pin becomes a way of freezing a known-old action forever.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # -------------------------------------------------------------------- Python
+  # The backend, the test suite and the optional extras all live in
+  # requirements*.txt at the repository root.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    # Majors are left ungrouped on purpose: a major bump to httpx, groq or eel
+    # deserves to be read on its own rather than buried in a batch.
+
+  # ------------------------------------------------------------------ frontend
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      frontend-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # ------------------------------------------------------------------ electron
+  # Electron itself is intentionally NOT grouped with the rest: an Electron major
+  # changes the Chromium the shipped UI runs in, and the chromium-ui job is the
+  # only thing that would catch a regression from it.
+  - package-ecosystem: npm
+    directory: /electron
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      electron-tooling-minor-and-patch:
+        exclude-patterns:
+          - electron
+        update-types:
+          - minor
+          - patch

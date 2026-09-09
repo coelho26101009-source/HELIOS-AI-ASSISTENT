@@ -62,7 +62,7 @@ jobs:
         #
         # `-m "not chromium"` DESELECTS the real-Chromium tests rather than
         # letting them skip here. This job installs no Electron and builds no
-        # frontend, so they could only ever skip -- and 53 tests reporting
+        # frontend, so they could only ever skip -- and 57 tests reporting
         # "skipped" in the job most people read as "the tests" is how they
         # stayed unrun for so long. They are deselected here and EXECUTED in
         # the chromium-ui job below, which fails if it cannot run them.
@@ -143,7 +143,7 @@ jobs:
         run: npm test
 
   # --------------------------------------------------- the shipped UI, driven
-  # The 53 tests that load the PRODUCTION bundle into Electron's own Chromium
+  # The 57 tests that load the PRODUCTION bundle into Electron's own Chromium
   # and measure what a user would see. They ran on one developer's Windows
   # machine and nowhere else, because every module looked for `electron.exe` --
   # a filename that cannot exist on Linux -- so on CI they skipped and the

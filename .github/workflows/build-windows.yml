@@ -164,7 +164,15 @@ jobs:
       # permission rather than the whole workflow being granted it.
       - name: Publish GitHub release
         if: inputs.publish_release && startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        # The only third-party action in this repository, and it runs in the
+        # only job that holds `contents: write`. A mutable `@v2` tag can be
+        # repointed at any commit by whoever controls that tag, so this one is
+        # pinned to an immutable SHA instead of a name. The `actions/*` steps
+        # above stay on major tags on purpose: they are GitHub's own, published
+        # from the same trust boundary as the runner itself. Dependabot's
+        # github-actions updates keep this pin current and name the version it
+        # is moving to in the pull request.
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
             electron/dist-electron/*.exe
