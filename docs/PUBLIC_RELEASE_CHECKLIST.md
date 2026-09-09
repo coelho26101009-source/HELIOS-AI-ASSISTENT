@@ -6,8 +6,9 @@ Marks are used strictly: `[x]` only when the thing is actually finished and
 verified, `[ ]` when it is not, `[~]` when it is partly there with the remainder
 named. An item nobody has tested says so.
 
-Last reviewed: **2026-08-30**, during the public-release foundation audit and
-its final cleanup (licence decision, `project_agent.py` removal).
+Last reviewed: **2026-09-09**, during the documentation truth pass. That pass
+audited every public document against the code and corrected the provider,
+conversation, memory, CI and security claims; it changed documentation only.
 
 ---
 
@@ -62,6 +63,12 @@ remove the obligations from third-party dependencies — see
 ## Privacy
 
 - [x] `PRIVACY.md` documenting real data flows per provider mode
+- [x] **Documentation truth pass** — every public document audited against the
+      code (2026-09-09). Corrected: Groq-only provider descriptions, AUTO/CLOUD
+      mode semantics, conversations described as read-only, Memory/RAG listed as
+      roadmap, the absence of Mistral, Gemini and the Second Brain from all
+      user-facing docs, `edge-tts` described as local TTS, a claimed cloud-audio
+      fallback that does not exist, and a stale count of eel-exposed functions.
 - [x] Data flows traced in code rather than assumed
 - [x] Storage locations, retention and deletion documented
 - [x] **Corrected a false claim**: the UI said "no modo Local, nada sai do
@@ -70,8 +77,12 @@ remove the obligations from third-party dependencies — see
 - [x] Screenshots auto-expire (1 hour / 10 most recent)
 - [x] Voice recordings deleted immediately after transcription
 - [x] API key stored OS-encrypted (DPAPI), never reaches the renderer
+- [x] **Conversation deletion**: per thread, several at once, and all — each
+      removing the thread's messages, summary, facts and index entries
+- [x] Memory deletion: per memory, "Esquecer tudo", and per Second Brain node
 - [ ] One-click "delete all my data" (individual controls exist; a single wipe
-      does not)
+      across conversations, memories, the graph, settings and credentials does
+      not)
 - [ ] Privacy review by someone qualified, before any commercial deployment
 
 ## Security
@@ -83,6 +94,15 @@ remove the obligations from third-party dependencies — see
 - [x] Grants bound to capability + target + scope; no permanent allow
 - [x] Secrets never in logs, tool results, clipboard or audit entries
 - [x] Prompt-injection trust boundary (external content is data, never instruction)
+- [x] Central schema validation ahead of the policy decision, so the arguments
+      the policy judged are the arguments the handler receives
+- [x] Semantic Execution Ledger: per-turn deduplication of tool calls keyed on
+      the effective (schema-normalised) arguments, covering both a completed
+      call replayed after a provider failover and two identical calls in flight
+      in one response
+- [x] Window close verified against window **identity** (handle plus owning
+      process id), with an unreadable owner PID falling back to `IsWindow` for
+      that poll rather than being read as a mismatch
 - [x] **Audit fix**: withdrew `context_switcher` (PowerShell, `shell=True`,
       `taskkill /F`, registry write, path traversal on a model-supplied name)
 - [x] **Audit fix**: removed `launch_process`/`kill_process` (`shell=True`, dead code)
@@ -112,8 +132,10 @@ remove the obligations from third-party dependencies — see
 - [x] Binds to loopback only; never `0.0.0.0`
 - [x] Ephemeral port
 - [x] **Audit fix**: WebSocket upgrades rejected unless the Origin is Nano's own
-      page — closes cross-site WebSocket hijacking of ~70 exposed functions
-      including the entire approval surface
+      page — closes cross-site WebSocket hijacking of every exposed backend
+      function, including the entire approval surface. That surface was around
+      seventy functions when the fix landed and is now well over a hundred,
+      which is the point: the guard has to hold as the surface grows.
 - [~] **A native local process is still not authenticated.** It can send any
       Origin. Accepted for now: a process at that privilege already owns the
       user session. A per-session token would close it if the threat model
@@ -131,8 +153,14 @@ remove the obligations from third-party dependencies — see
 - [x] Pinned action majors, official actions only
 - [x] Dependency caching
 - [x] Packaging workflow made manual-only with an explicit publish opt-in
-- [ ] Render/behaviour harnesses in CI (need real Chromium and a display;
-      currently local-only and required before a release)
+- [x] **Render/behaviour harnesses in CI.** The `chromium-ui` job loads the
+      production bundle into Electron's own Chromium under `xvfb` and runs the
+      57 `chromium`-marked tests (`render-check`, `chat-drive`, `settings-drive`,
+      `memory-render` and their UI contracts). They used to skip on CI because
+      every module looked for `electron.exe`, and the skip read as a pass.
+- [~] Harness coverage is not total: `csp-check`, `overlay-live` and
+      `focus-trap-render` still run only in the manual release gate, and the
+      Windows rendering path is not covered by any CI job.
 - [ ] Branch protection requiring CI to pass before merge
 
 ## Packaging
@@ -168,7 +196,9 @@ remove the obligations from third-party dependencies — see
 - [ ] Explain what Nano can do to the computer, and that it asks first
 - [ ] Surface the privacy summary during setup, not buried in Settings
 - [ ] Microphone and voice setup, including that wake-phrase is off by default
-- [ ] Graceful path when neither Groq nor Ollama is available
+- [ ] Graceful path when no cloud provider and no Ollama is available
+- [ ] Explain that the preferred cloud provider and the fallback order are two
+      separate settings
 
 ## Website
 
@@ -187,7 +217,8 @@ remove the obligations from third-party dependencies — see
 - [ ] Installer built, signed and validated on a clean Windows machine
 - [ ] Tested on a machine that is not the developer's
 - [ ] Tested without Ollama installed
-- [ ] Tested without a Groq key
+- [ ] Tested without any cloud API key
+- [ ] Tested with each cloud provider as the preferred one
 - [ ] Known-issues list published
 - [ ] Feedback channel staffed
 - [ ] Beta expectations set explicitly in the release notes
@@ -196,8 +227,10 @@ remove the obligations from third-party dependencies — see
 
 ## The honest summary
 
-**Ready:** the security architecture, the permission model, the interface, the
-test coverage, the community documentation, and CI.
+**Ready:** the security architecture, the permission model, the interface,
+conversations and memory, the multi-provider routing layer with its committed
+benchmark evidence, the automated test coverage including real Chromium UI tests
+in CI, and the community and privacy documentation.
 
 **Not ready, and genuinely blocking:**
 

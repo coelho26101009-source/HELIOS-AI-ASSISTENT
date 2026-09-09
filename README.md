@@ -6,10 +6,8 @@
   <img src="frontend/public/branding/nano-wordmark-alpha.png" alt="NANO" width="340" />
 </p>
 
-<h1 align="center">Nano v1.0</h1>
-
 <p align="center">
-  <strong>Assistente pessoal de IA para Windows, com voz, modelos cloud/local, controlo seguro do PC, memória e arquitetura extensível.</strong>
+  <strong>Assistente pessoal de IA para Windows: voz, modelos cloud e locais, controlo seguro do PC, conversas com histórico real, memória de longo prazo e arquitetura extensível.</strong>
 </p>
 
 <p align="center">
@@ -21,26 +19,47 @@
 
 ---
 
+> ### Estado do projeto
+>
+> **O Nano nunca teve um lançamento público.** Não existe nenhuma tag neste
+> repositório, não existe instalador e não há nada para descarregar. Este
+> README descreve o ramo `main`.
+>
+> O `version.json` diz `1.0.0` / `v1.0`: é a **versão canónica interna** que a
+> interface, a shell Electron e o backend leem para não se contradizerem. Não é
+> um número de release. Ver [`docs/RELEASING.md`](docs/RELEASING.md) e
+> [`docs/PUBLIC_RELEASE_CHECKLIST.md`](docs/PUBLIC_RELEASE_CHECKLIST.md).
+
 ## O que é o Nano?
 
-**Nano** é um assistente pessoal de IA para Windows concebido para viver no ambiente de trabalho — não apenas numa caixa de chat.
+**Nano** é um assistente pessoal de IA para Windows concebido para viver no
+ambiente de trabalho — não apenas numa caixa de chat.
 
-Combina uma aplicação Electron com identidade visual própria, modelos cloud e locais, voz global através de **Ctrl + Shift + Space**, memória persistente, ferramentas extensíveis e controlo seguro do Windows. O modelo pode pedir ações, mas **não recebe autoridade direta sobre o sistema operativo**.
+Combina uma aplicação Electron com identidade visual própria, vários provedores
+de modelos cloud e um modelo local, voz global através de
+**Ctrl + Shift + Space**, conversas persistentes, memória de longo prazo,
+ferramentas extensíveis e controlo seguro do Windows. O modelo pode pedir
+ações, mas **não recebe autoridade direta sobre o sistema operativo**.
 
-A versão atual usa a interface **Ember**, uma experiência desktop em preto e vermelho com superfícies glass, navegação superior, histórico de conversas e overlay de voz independente da janela principal.
+A interface chama-se **Ember**: uma experiência desktop em preto e vermelho com
+superfícies glass, navegação superior, rail de conversas e overlay de voz
+independente da janela principal.
 
-## Destaques do Nano v1.0
+## O que já existe
 
 | Área | Estado atual |
 |---|---|
 | **Desktop** | Electron, tray, single-instance, interface Ember e shell responsiva |
-| **IA cloud** | Groq como provider principal |
-| **IA local** | Ollama com `qwen3:8b` |
-| **Failover** | Modo AUTO: Groq → Ollama em falhas transitórias/rate limit |
-| **Voz** | Hotkey global, STT local com faster-whisper e TTS |
-| **PC Control** | Apps, janelas, volume, brilho, teclado, ficheiros, web, definições, energia e capturas |
-| **Segurança** | PolicyEngine + PermissionManager + ToolExecutor + target binding |
-| **Memória** | Persistência local e contexto do utilizador |
+| **IA cloud** | **Groq**, **Mistral** e **Google (Gemini)** |
+| **IA local** | Ollama, por omissão `qwen3:8b` |
+| **Modos** | AUTO / CLOUD / LOCAL, com uma única autoridade de routing |
+| **Failover** | Em AUTO: cloud preferida → restantes clouds → Ollama, sempre visível |
+| **Conversas** | Threads reais: criar, abrir, renomear, apagar uma ou várias |
+| **Memória** | Memória de longo prazo com extração determinística e recuperação (RAG) |
+| **Second Brain** | Nós e relações derivados das memórias ativas |
+| **Voz** | Hotkey global, STT local com faster-whisper, TTS através do Edge |
+| **PC Control** | 56 ferramentas estreitas: apps, janelas, áudio, teclado, ficheiros, web, ecrã, sistema, energia e capturas |
+| **Segurança** | Validação de esquema + PolicyEngine + PermissionManager + ToolExecutor + target binding |
 | **Extensibilidade** | Sistema de plugins/tools com autorização centralizada |
 
 ---
@@ -54,16 +73,20 @@ A versão atual usa a interface **Ember**, uma experiência desktop em preto e v
 - **Node.js + npm** para Electron/frontend na primeira execução
 - dependências Python instaladas com `requirements.txt`
 - **Ollama** apenas se quiseres usar os modos AUTO/LOCAL
+- uma chave de API de pelo menos um provedor cloud, para AUTO/CLOUD
 
 ```bat
 python -m pip install -r requirements.txt
 ```
 
-Para preparar o modelo local usado atualmente:
+Para preparar o modelo local usado por omissão:
 
 ```bat
 ollama pull qwen3:8b
 ```
+
+Capacidades opcionais (transcrição local, PDF, automação de browser, wake word)
+vivem em `requirements-optional.txt` e não são instaladas por omissão.
 
 ### Abrir o Nano Desktop
 
@@ -73,9 +96,13 @@ Faz duplo-clique em:
 NANO_DESKTOP.bat
 ```
 
-O launcher valida o Python e as dependências, instala o Electron na primeira execução, recompila o frontend apenas quando necessário e entrega o controlo à shell Electron. A janela só aparece depois de o backend estar pronto.
+O launcher valida o Python e as dependências, instala o Electron na primeira
+execução, recompila o frontend apenas quando necessário e entrega o controlo à
+shell Electron. A janela só aparece depois de o backend estar pronto.
 
-Fechar a janela principal **esconde o Nano no tray** para que a hotkey global continue disponível. Para sair completamente, usa **Sair do Nano** no menu do tray.
+Fechar a janela principal **esconde o Nano no tray** para que a hotkey global
+continue disponível. Para sair completamente, usa **Sair do Nano** no menu do
+tray.
 
 ### Modo navegador
 
@@ -85,16 +112,15 @@ Para desenvolvimento do frontend ou como alternativa ao Electron:
 NANO.bat
 ```
 
-O modo navegador usa o mesmo backend, mas não inclui tray, hotkey global nem overlay de voz desktop.
+O modo navegador usa o mesmo backend, mas não inclui tray, hotkey global nem
+overlay de voz desktop.
 
 ---
 
 ## Experiência Desktop — Ember
 
-A interface Nano v1.0 foi desenhada para funcionar como uma aplicação desktop, não como um dashboard web genérico.
-
 - top bar flutuante com navegação por **Chat · Ferramentas · PC · Memória · Definições**
-- rail de conversas à esquerda
+- rail de conversas à esquerda, com pesquisa, seleção múltipla e eliminação
 - superfícies glass em preto e vermelho Nano (`#F40101`)
 - wordmark e marca oficial em toda a aplicação
 - ícone próprio no Windows, taskbar e tray
@@ -102,29 +128,89 @@ A interface Nano v1.0 foi desenhada para funcionar como uma aplicação desktop,
 - animações com suporte para `prefers-reduced-motion`
 - layout validado desde 1920×1080 até ao mínimo da janela Electron
 
-As conversas antigas são atualmente abertas em **modo de leitura**; o backend ainda não tem threads independentes com restauração completa de contexto.
+---
+
+## Conversas
+
+As conversas são **threads reais**, não um histórico só de leitura.
+
+- criar uma conversa nova, mudar de conversa e continuar a escrever em qualquer
+  uma delas;
+- abrir uma conversa antiga **reconstrói o contexto do modelo** a partir das
+  mensagens e do resumo dessa thread, para que a resposta seguinte seja dada
+  contra o histórico certo;
+- renomear, arquivar, apagar uma conversa ou apagar várias numa única ação
+  confirmada;
+- apagar uma conversa remove as suas mensagens, o resumo, os factos da thread e
+  as entradas de índice — mas **não** as memórias de longo prazo que dela
+  nasceram, que são geridas à parte na Memória.
+
+Cada conversa tem um dono explícito: uma mensagem pertence à thread ativa no
+momento em que foi escrita, e não à que estiver aberta quando a resposta chega.
+
+---
+
+## Memória e Second Brain
+
+**Memória de longo prazo.** O que vale a pena guardar é decidido por
+`core/memory_extraction.py`, que é **determinístico e local** — não é uma
+chamada ao modelo. Uma frase que pediste explicitamente para guardar fica ativa.
+Uma frase que o Nano apenas *inferiu* é pontuada: só uma inferência de
+confiança alta se torna memória ativa, uma mais fraca fica como candidata inerte
+que podes promover, e abaixo disso não é guardado nada. Preferir falhar uma
+memória ambígua a guardar uma errada é intencional.
+
+**Recuperação (RAG).** `core/context_composer.py` é o único sítio que decide o
+que o modelo sabe sobre o passado: a cauda recente da conversa, o resumo da
+parte mais antiga, mensagens relevantes **desta** thread, memórias de longo
+prazo relevantes e as entradas do Second Brain a que dizem respeito. Cada secção
+tem o seu próprio orçamento de tokens e tudo é desduplicado, para que um facto
+repetido em quatro sítios não seja enviado quatro vezes.
+
+**Second Brain.** Nós e relações entre as coisas de que as memórias falam. A
+contenção é a escolha de design: um nó só nasce de uma memória ativa ou de uma
+ação explícita tua — nunca de texto solto — e uma aresta só é escrita quando
+dois nós aparecem na mesma memória.
+
+> **Honestamente:** o Second Brain está implementado e testado, com CRUD, leitura
+> do grafo e reconciliação. Não é um grafo de conhecimento maduro e densamente
+> povoado — isso vem de uso real prolongado, e ainda não aconteceu.
 
 ---
 
 ## Modos de IA
 
-O Nano respeita três modos explícitos:
+O Nano respeita três modos explícitos. Além do modo, existe uma
+**cloud preferida** (Definições → IA), que decide qual o provedor cloud a ser
+tentado primeiro. São duas definições independentes.
 
 | Modo | Comportamento |
 |---|---|
-| **CLOUD** | Usa Groq apenas. Se a cloud falhar, devolve um erro limpo e não muda para local. |
-| **AUTO** | Groq é o principal. Em falhas transitórias/rate limit, continua o mesmo turno com Ollama. |
-| **LOCAL** | Usa apenas Ollama. Não faz pedidos Groq no hot path. |
+| **CLOUD** | Usa **apenas a cloud preferida**. Não substitui por outro fornecedor e não muda para local. Se falhar, devolve um erro limpo. |
+| **AUTO** | Cloud preferida primeiro → restantes clouds pela ordem do sistema → Ollama local como último recurso. |
+| **LOCAL** | Usa apenas o Ollama. Nenhum provedor cloud é contactado, nem sequer para uma sonda de estado. |
 
-No modo AUTO, o Nano mantém um cooldown leve para não insistir repetidamente na Groq enquanto o provider está temporariamente limitado. O fallback preserva o mesmo turno, resultados de tools e permissões para evitar ações duplicadas.
-
-O modelo local atual é:
+A ordem das clouds *depois* da preferida é do sistema, não da preferência:
 
 ```text
-qwen3:8b
+groq → mistral → google → ollama
 ```
 
-É mais lento que a cloud, mas permite continuar a conversar e usar tools quando a Groq está indisponível.
+`preferredCloud` decide quem vai primeiro; `CLOUD_PROVIDER_IDS` decide quem vem
+a seguir. Podes escolher o Google em primeiro lugar e a ordem restante continua
+a ser governada por esse tuplo.
+
+Essa ordem é uma **decisão medida**, exportada em
+[`benchmarks/provider_routing/`](benchmarks/provider_routing/README.md), com as
+suas ressalvas: uma conta, um dia, uma execução por caso, e o Google
+sub-medido por limites de utilização. Não é uma afirmação de que um fornecedor
+é objetivamente melhor do que outro.
+
+Em AUTO, o Nano respeita o `Retry-After` real de um 429 e mantém um cooldown por
+fornecedor, para não insistir num provedor que sabe estar limitado. O fallback
+preserva o mesmo turno, os resultados de tools e as permissões — o
+**Execution Ledger** garante que uma ação já executada não é repetida quando o
+turno muda de fornecedor.
 
 Mais detalhes: [Model Routing](docs/architecture/MODEL_ROUTING.md)
 
@@ -132,9 +218,7 @@ Mais detalhes: [Model Routing](docs/architecture/MODEL_ROUTING.md)
 
 ## Voz
 
-A voz faz parte da experiência desktop principal.
-
-Pressiona:
+A voz faz parte da experiência desktop principal. Pressiona:
 
 ```text
 Ctrl + Shift + Space
@@ -154,30 +238,36 @@ compute_type: int8
 language: pt
 ```
 
-O modelo foi escolhido através de benchmark local e usa uma pequena pista de vocabulário para nomes importantes do ecossistema Nano.
+A transcrição é **inteiramente local**: não existe caminho de STT na cloud no
+código. O modelo foi escolhido através de benchmark local e usa uma pequena
+pista de vocabulário para nomes importantes do ecossistema Nano.
+
+### Text-to-speech
+
+As respostas faladas usam o serviço de voz **Edge da Microsoft**. Isto vale em
+**todos os modos, incluindo LOCAL**: o texto a ser lido sai da máquina para ser
+convertido em áudio. "Local" refere-se ao modelo de linguagem, não a silêncio
+total de rede. Desliga as respostas faladas em Definições → Voz se quiseres que
+nada saia. Ver [PRIVACY.md](PRIVACY.md).
 
 ### Overlay Ember
 
-O overlay de voz é uma janela Electron própria, sempre no topo e independente da janela principal. Mostra estados distintos para:
-
-- Listening
-- Transcribing
-- Processing
-- Speaking
-- Busy
-- Error
-
-Continua a funcionar quando a janela principal está minimizada ou escondida no tray.
+O overlay de voz é uma janela Electron própria, sempre no topo e independente da
+janela principal. Mostra estados distintos para Listening, Transcribing,
+Processing, Speaking, Busy e Error, e continua a funcionar quando a janela
+principal está minimizada ou escondida no tray.
 
 Documentação: [Voice](docs/VOICE.md) · [Speech Accuracy](docs/architecture/SPEECH_ACCURACY.md)
 
 ---
 
-## PC Control V2
+## PC Control
 
 O Nano interage com o Windows através de **56 ferramentas estreitas e
-auditáveis**. A ideia é sempre a mesma: cobertura larga através de muitas
-capabilities pequenas, nunca através de um executor genérico.
+auditáveis** (as tools com prefixo `pc_`; o registo completo, incluindo memória,
+calendário, lembretes e web, tem 84 entradas). A ideia é sempre a mesma:
+cobertura larga através de muitas capabilities pequenas, nunca através de um
+executor genérico.
 
 ### Aplicações e janelas
 
@@ -229,6 +319,12 @@ há eliminação permanente de ficheiros, e o Nano recusa escrever numa janela d
 consola — abrir um terminal e escrever nele seria uma shell montada a partir de
 duas ações inofensivas.
 
+Fechar uma janela envia `WM_CLOSE`, a mesma mensagem do botão X. A aplicação
+pode recusar, e nesse caso o Nano relata que recusou: "fechei" e "continuou
+aberta" são ambas respostas honestas, "fechado" não seria. O resultado é
+verificado contra a identidade da janela (handle **e** processo dono), porque um
+handle pode ser reciclado por outra janela.
+
 Ações sensíveis pedem sempre autorização, e o cartão de confirmação mostra o
 que vai acontecer, a quê e com que alcance.
 
@@ -238,41 +334,49 @@ Documentação: [PC Control](docs/architecture/PC_CONTROL.md)
 
 ## Segurança
 
-A regra central do Nano é simples: **o modelo pode pedir; o sistema decide e executa**.
+A regra central do Nano é simples: **o modelo pode pedir; o sistema decide e
+executa**. O caminho real, tal como está em `core/tool_execution.py`:
 
 ```text
 MODEL
   ↓
-REQUEST
+resolução de capability
   ↓
-POLICY
+validação de argumentos (esquema registado)
   ↓
-PERMISSION
+classificação de scope / resolução de target
+  ↓
+PolicyEngine
+  ↓
+PermissionManager
   ↓
 ToolExecutor
   ↓
-TOOL
+TOOL ESTREITA → OS
   ↓
-REAL RESULT
+RESULTADO VERIFICADO → auditoria
 ```
 
 A autorização é centralizada e inclui, conforme a ação:
 
 - classificação por risco
-- `PolicyEngine`
-- `PermissionManager`
-- `ToolExecutor`
-- permissões `ALLOW_ONCE`
-- permissões limitadas à tarefa
+- validação central de esquema antes de a política decidir
+- `PolicyEngine`, `PermissionManager` e `ToolExecutor`
+- permissões `ALLOW_ONCE` e permissões limitadas à tarefa
 - binding por capability + target + scope
 - paths protegidos e execution scopes
 - confirmação para ações sensíveis
 - limites de tamanho/estrutura dos resultados
 - falha fechada para tools desconhecidas ou argumentos inválidos
 
-Uma permissão para fechar uma janela específica, por exemplo, não se transforma numa autorização genérica para fechar qualquer outra janela.
+Uma permissão para fechar uma janela específica não se transforma numa
+autorização genérica para fechar qualquer outra janela.
 
-Política técnica: [Security Policy](docs/SECURITY_POLICY.md)
+Os handlers de plugin nunca são invocados diretamente: o `plugin_loader` recusa
+executar um handler a menos que quem chama apresente o ToolExecutor como
+autoridade de execução, por isso contornar o pipeline falha fechado.
+
+Política técnica: [Security Policy](docs/SECURITY_POLICY.md) · [SECURITY.md](SECURITY.md)
 
 ---
 
@@ -282,25 +386,31 @@ Política técnica: [Security Policy](docs/SECURITY_POLICY.md)
 ┌──────────────────────── Nano Desktop / Electron ────────────────────────┐
 │  Ember UI · Tray · Global Hotkey · Voice Overlay · Window Lifecycle     │
 └──────────────────────────────────┬──────────────────────────────────────┘
-                                   │ parent/child control channel
+                                   │ canal de controlo pai/filho (stdio)
                                    ▼
 ┌──────────────────────────── Python Backend ─────────────────────────────┐
 │                                                                         │
-│  Brain / Model Routing ── Groq                                          │
-│          │             └─ Ollama                                        │
+│  Brain / resolve_route ──┬─ Groq                                        │
+│          │               ├─ Mistral                                     │
+│          │               ├─ Google (Gemini)                             │
+│          │               └─ Ollama (local, terminal)                    │
 │          │                                                              │
-│          ├─ Memory / Context                                            │
+│          ├─ Conversas (threads)                                         │
+│          ├─ Memória de longo prazo · RAG · Second Brain                 │
 │          ├─ Task Engine                                                 │
 │          ├─ VoiceRuntime                                                │
 │          │                                                              │
-│          └─ Policy → Permission → ToolExecutor                          │
+│          └─ Schema → Policy → Permission → ToolExecutor                 │
 │                                      │                                  │
 │                                      └─ Plugins / PC Control            │
 │                                                                         │
+│  SQLite (uma base de dados, migrada por versão — nunca substituída)     │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-A shell Electron controla o ciclo de vida da aplicação e arranca o backend Python como processo filho. A execução de tools continua centralizada no backend; a UI não recebe uma ponte genérica para executar comandos no sistema.
+A shell Electron controla o ciclo de vida da aplicação e arranca o backend
+Python como processo filho. A execução de tools continua centralizada no
+backend; a UI não recebe uma ponte genérica para executar comandos no sistema.
 
 Documentação detalhada: [Desktop Architecture](docs/architecture/DESKTOP.md) · [Architecture](docs/architecture/ARCHITECTURE.md)
 
@@ -309,12 +419,13 @@ Documentação detalhada: [Desktop Architecture](docs/architecture/DESKTOP.md) �
 ## Estrutura do projeto
 
 ```text
-Nano_Assistant/
+Nano/
 ├── core/        # brain, providers, memória, segurança, voz e execução
 ├── plugins/     # tools e integrações autorizadas
 ├── frontend/    # Next.js + React + interface Ember
 ├── electron/    # shell desktop, tray, hotkey e voice overlay
 ├── config/      # configuração base
+├── benchmarks/  # artefactos de medição versionados
 ├── tests/       # testes backend, segurança e integração
 ├── docs/        # arquitetura, segurança, voz e design
 ├── scripts/     # utilitários de desenvolvimento/build
@@ -326,76 +437,88 @@ Nano_Assistant/
 
 ## Configuração e secrets
 
-A configuração base vive em:
+A configuração base vive em `config/settings.yaml`. As preferências do
+utilizador são separadas da configuração do repositório.
 
-```text
-config/settings.yaml
-```
+As chaves de API são configuradas pela própria interface e guardadas no Windows
+através de armazenamento seguro baseado em **DPAPI**, por conta e por
+fornecedor, em vez de ficarem expostas no frontend. Variáveis de ambiente são
+lidas como fallback só de leitura, para que um `.env` existente continue a
+funcionar. Ver [PRIVACY.md](PRIVACY.md).
 
-Preferências do utilizador são separadas da configuração do repositório sempre que aplicável.
-
-A chave Groq pode ser configurada através da própria interface e é guardada no Windows através do armazenamento seguro baseado em **DPAPI**, em vez de ficar exposta no frontend.
-
-Nunca publiques ficheiros `.env`, logs, gravações de voz, screenshots privadas ou chaves no repositório.
+Nunca publiques ficheiros `.env`, logs, gravações de voz, screenshots privadas
+ou chaves no repositório.
 
 ---
 
 ## Testes
 
-Suite principal:
-
 ```bat
-python -m pytest -q
+python -m pytest -q          :: backend (1845 testes)
+cd electron && npm test      :: shell desktop
+cd frontend && npm run build :: bundle de produção
 ```
 
-Testes Electron:
+O CI no GitHub Actions corre seis verificações em cada push e pull request:
 
-```bat
-cd electron
-npm test
-```
+| Job | O que corre |
+|---|---|
+| **Python tests (ubuntu-latest)** | a suite backend, e uma segunda passagem por ordem baralhada |
+| **Python tests (windows-latest)** | a mesma suite na plataforma alvo |
+| **Frontend** | typecheck e build de produção |
+| **Electron tests** | testes da shell desktop |
+| **Chromium UI tests** | 57 testes que carregam o **bundle de produção** no Chromium do próprio Electron, sob `xvfb` |
+| **Security static checks** | rejeita `shell=True`, `os.system`, `os.popen`, `eval`, `exec`, e permissões de workflow desnecessárias |
 
-Frontend:
+Os testes de Chromium **correm mesmo** — costumavam ser saltados no CI porque
+todos os módulos procuravam `electron.exe`, um nome que não pode existir em
+Linux, e o skip lia-se como um pass. Deixou de ser assim.
 
-```bat
-cd frontend
-npm run build
-```
-
-A suite inclui testes de segurança, PC Control, failover Groq→Ollama, desktop shell e verificações reais de layout Chromium.
+Isto não é cobertura de todo o comportamento possível da UI. O que o job de
+Chromium cobre são quatro harnesses conduzidos a partir do pytest —
+`render-check` (layout de 1920 até 940×620), `chat-drive`, `settings-drive` e
+`memory-render` — mais os contratos de UI que os acompanham. O que **não** corre
+no CI: `csp-check`, `overlay-live` e `focus-trap-render`, que pertencem ao gate
+manual de release, o caminho de renderização em Windows, e a verificação da
+aplicação real. Ver [`docs/RELEASING.md`](docs/RELEASING.md).
 
 ---
 
 ## Limitações atuais
 
-Nano v1.0 ainda está em desenvolvimento ativo.
-
-- o runtime Python empacotado para distribuição final ainda precisa de ser concluído
+- **Não existe lançamento público, instalador nem build assinada.**
+- o runtime Python empacotado para distribuição final ainda não foi feito
 - **Start with Windows** depende do fluxo de aplicação empacotada
-- browser automation ainda não faz parte do produto atual
-- PC Control é deliberadamente estreito e não oferece shell arbitrária
+- não há experiência de primeira execução: o Nano abre diretamente na interface
+  completa
+- não existe mecanismo de atualização
+- automação de browser existe mas depende do `playwright` opcional; não é
+  instalada por omissão
 - não há clique por coordenadas nem OCR: o Nano não vê o ecrã, e não finge ver
-- o brilho por software depende do monitor (DDC/CI); onde não existe, é reportado como tal
-- conversas antigas ainda são de leitura, sem threads completas independentes
-- anexos ainda estão marcados como “brevemente”
-- wake phrase permanece experimental/desativada por omissão
-- o fallback local é mais lento que Groq
-- providers cloud continuam sujeitos aos respetivos rate limits
+- PC Control é deliberadamente estreito e não oferece shell arbitrária
+- o brilho por software depende do monitor (DDC/CI); onde não existe, é
+  reportado como tal
+- o Second Brain está implementado e testado, mas na prática ainda é esparso
+- anexos ainda não existem
+- wake phrase permanece experimental e desativada por omissão
+- o fallback local é mais lento que a cloud (≈19 s por turno contra ≈0,45 s)
+- os provedores cloud continuam sujeitos aos respetivos rate limits
+- `electron/package.json` e `frontend/package.json` ainda dizem `8.1.0`, um
+  resto que pertence ao passe de packaging
 
 ---
 
-## Roadmap
+## Próximas áreas
 
-Próximas áreas de evolução, sem ordem rígida:
+Sem ordem rígida, e sem prometer datas:
 
-- **Browser/Web** — pesquisa e automação web segura
+- **Packaging** — installer, runtime Python autocontido, zero janelas de terminal
+- **Code signing** — sem isto, o SmartScreen avisa em cada descarga
+- **Onboarding** — primeira execução, configuração de provedor e de microfone
 - **Vision / OCR** — ler o ecrã, com controlos de privacidade próprios
-- **Conversation Threads** — histórico real por thread e restauração de contexto
-- **Memory / RAG** — recuperação e contexto mais ricos
 - **Coding / GitHub** — workflows de desenvolvimento assistido
 - **Produtividade** — calendário, email e integrações externas
-- **Packaging** — installer/runtime Python totalmente autocontido
-- **Public Release Hardening** — CSP, privacidade, licenças e auditoria final de segurança
+- **Eliminação total num clique** — os controlos individuais já existem
 
 ---
 
@@ -405,8 +528,9 @@ Próximas áreas de evolução, sem ordem rígida:
 |---|---|
 | [Desktop](docs/architecture/DESKTOP.md) | Electron, lifecycle, tray, hotkey e bridge |
 | [PC Control](docs/architecture/PC_CONTROL.md) | Tools Windows, capabilities e permissões |
+| [Model Routing](docs/architecture/MODEL_ROUTING.md) | Provedores, modos, failover e Execution Ledger |
+| [Provider Benchmark](benchmarks/provider_routing/README.md) | A medição por detrás da ordem de fallback |
 | [Speech Accuracy](docs/architecture/SPEECH_ACCURACY.md) | Benchmark e decisões de STT |
-| [Model Routing](docs/architecture/MODEL_ROUTING.md) | Groq, Ollama e routing |
 | [Security Policy](docs/SECURITY_POLICY.md) | Política de capabilities e aprovação |
 | [Voice](docs/VOICE.md) | Runtime de voz, STT/TTS e wake |
 | [Design](docs/design/README.md) | Identidade e decisões visuais do Nano |
@@ -439,6 +563,6 @@ Próximas áreas de evolução, sem ordem rígida:
 </p>
 
 <p align="center">
-  <strong>Nano v1.0</strong><br/>
+  <strong>Nano</strong> — em desenvolvimento ativo<br/>
   AI on your desktop. Authority stays with the system.
 </p>

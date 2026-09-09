@@ -65,11 +65,25 @@ Please allow a reasonable period for a fix before disclosing publicly.
 If you are looking for somewhere to start, these are the parts of Nano where a
 mistake matters most.
 
-**The execution pipeline.** Nano's central invariant is:
+**The execution pipeline.** Nano's central invariant, as implemented in
+`core/tool_execution.py`:
 
 ```
-MODEL → REQUEST → POLICY → PERMISSION → TOOL EXECUTOR → NARROW TOOL → REAL RESULT
+MODEL
+  → capability resolution
+  → argument validation (registered schema)
+  → scope classification / target resolution
+  → POLICY
+  → PERMISSION
+  → TOOL EXECUTOR
+  → NARROW TOOL → OS
+  → VERIFIED RESULT → AUDIT
 ```
+
+Schema validation happens **before** the policy decides, so an argument the
+policy reasons about is an argument the handler will actually receive. The
+shorter `MODEL → REQUEST → POLICY → PERMISSION → EXECUTION` shorthand used in
+other documents is a summary of this chain, not a different one.
 
 No model output may reach the operating system except through a narrow tool with
 typed arguments. Anything that shortens that chain is a vulnerability, even if
@@ -85,13 +99,22 @@ it never executes in practice. See `docs/SECURITY_POLICY.md`.
   this project has already had three times.
 * **`core/pc_control/`** — every Windows effect. Path containment, target
   binding, protected locations, confirmation on destructive actions.
-* **`core/local_control_plane.py` and the eel bridge** — roughly seventy
-  functions are reachable over a local WebSocket, including the approval
-  controls. Origin enforcement lives here.
+* **`core/local_control_plane.py` and the eel bridge** — every backend function
+  the renderer can call is reachable over a local WebSocket, including the
+  approval controls (`confirm_action`, `resolve_permission`,
+  `set_emergency_stop`). The surface has grown with the product and is now well
+  over a hundred functions, which is exactly why Origin enforcement lives here
+  rather than being assumed.
 * **`electron/main.js` and `electron/preload.js`** — process isolation, the
   preload surface, navigation restrictions, and the Content Security Policy.
 * **`core/secret_store.py`** — the API key. It is stored OS-encrypted and must
   never reach the renderer, a log, the clipboard, or a tool result.
+* **`core/schema_validation.py`** — the central argument validator. Every tool
+  call is normalised here before the policy sees it, so a divergence between
+  what the policy judged and what the handler runs is a vulnerability.
+* **The Execution Ledger in `core/brain.py`** — per-turn deduplication of tool
+  calls across a provider failover, including calls still in flight. A hole here
+  means a real effect on the machine happening twice.
 * **Prompt injection** — external content (web pages, file contents, tool
   output) is data, never instructions. It may not grant a permission.
 
@@ -104,7 +127,21 @@ Stated plainly rather than left for someone to discover:
   cannot stop a local program that simply sends a different header. A process at
   that privilege level can already read the credential store and modify Nano's
   own files, so this is an accepted limitation, not an oversight.
-* **In CLOUD and AUTO modes, message text is sent to Groq.** See `PRIVACY.md`.
+* **In CLOUD and AUTO modes, message text and its assembled context are sent
+  to a cloud provider** — Groq, Mistral or Google (Gemini). In AUTO a provider
+  that was tried and failed has already received the request before the next one
+  answers, so the provider named in the interface is the one that *answered*,
+  not the only one that saw the message. See `PRIVACY.md`.
+* **Tool results are sent to the provider.** A tool you approved — reading the
+  clipboard, reading a file, extracting a web page — returns content that
+  becomes part of the request so the model can continue. Approval and
+  non-transmission are different things. Screenshots are the exception: the tool
+  returns a path and a size, never pixels.
+* **The Execution Ledger deduplicates identical calls within one turn, and that
+  is all it claims.** It stops a second provider from replaying a call it can
+  see in the history, and stops two identical calls in one response from both
+  executing. It is not a transactional guarantee across turns, and it does not
+  make a non-idempotent tool idempotent in general.
 * **No code signing yet.** Nothing is packaged or signed, so there is no
   supply-chain guarantee on a built artifact — because there is no built
   artifact.

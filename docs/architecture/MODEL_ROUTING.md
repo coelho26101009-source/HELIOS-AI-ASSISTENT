@@ -1,162 +1,250 @@
 # Nano Model Routing
 
-## Overview
+Which provider answers a turn, which model it uses, and why.
 
-The Nano brain now routes tasks through a Model Router instead of assuming a single hardcoded model. The routing decision is made centrally and is policy-aware, hardware-aware, privacy-aware, and capability-aware.
+## The one routing authority
 
-## Core idea
+Every chat turn's provider is decided in exactly one place:
 
-User -> Nano Brain -> Task Classification -> Model Router -> Best Available Model -> Tool / Agent / Response
-
-The Model Router is responsible for choosing the best provider and model for the active task, while preserving the existing safety constraints from the Policy Engine.
-
-## Providers
-
-### OllamaProvider
-
-- Local-first provider
-- Uses the Ollama API
-- Discovers models with /api/tags
-- Marks model capabilities based on actual metadata when available and conservative heuristics when not
-- Offline state is handled without crashing the Nano
-
-### CloudProvider
-
-- Optional fallback when API credentials are configured
-- Uses the configured cloud model
-- Kept as an explicit fallback, not the default path
-
-### FutureProvider
-
-- Extensible hook for future provider integrations
-
-## Model registry
-
-The registry holds a central list of ModelInfo objects with metadata similar to:
-
-- name
-- provider
-- context_window
-- supports_tools
-- supports_vision
-- supports_coding
-- supports_reasoning
-- supports_streaming
-- supports_json
-- local
-- estimated_memory
-- speed_class
-- quality_class
-
-## Selection model
-
-The router accepts a ModelRequest containing:
-
-- task_type
-- complexity
-- requires_tools
-- requires_vision
-- requires_coding
-- requires_reasoning
-- privacy_level
-- context_size
-- latency_preference
-- local_only
-
-Selection uses a score/rank approach with weighted factors:
-
-- capability match
-- quality fit
-- latency fit
-- locality
-- context fit
-- resource fit
-
-## Privacy policy
-
-Privacy levels:
-
-- LOW
-- NORMAL
-- HIGH
-- STRICT_LOCAL
-
-Behavior:
-
-- HIGH and STRICT_LOCAL prefer local-only models.
-- The router never bypasses the existing Policy Engine.
-- Cloud fallback is only used when allowed and when privacy constraints permit it.
-
-## Hardware awareness
-
-The router uses conservative filtering and resource scoring based on:
-
-- estimated memory footprint
-- local-only requirement
-- configured context budget
-- approximate hardware profile
-
-This avoids absurd choices such as selecting a large model on a machine that cannot realistically run it.
-
-## Fallback
-
-The router prefers a primary candidate, but if the selected model/provider is unavailable it will attempt a compatible alternative. It will not silently switch to a model that lacks the required capability.
-
-Examples:
-
-- vision task -> vision-capable model only
-- tool task -> tool-capable model only
-- strict local privacy -> local-only model only
-
-## Brain integration
-
-The Brain now owns a router and uses it for model selection and default local routing, while retaining backward compatibility for the current local/cloud execution flow.
-
-This is done without forcing the rest of the Nano to depend on model-specific implementation details.
-
-## Configuration
-
-Example configuration block:
-
-```yaml
-model_router:
-  enabled: true
-  default_provider: ollama
-  local_first: true
-  default_privacy: normal
-  routing:
-    capability_weight: 4.0
-    quality_weight: 2.5
-    speed_weight: 2.0
-    privacy_weight: 4.0
-    context_weight: 1.5
-    resource_weight: 1.5
+```
+core.providers.resolve_route(mode, groq, ollama, *, google, mistral, preferred, tier)
 ```
 
-## Extending the system
+`Brain.chat` calls it; nothing else may decide a provider. It returns a single
+decision object — provider, model, mode, tier, whether the choice is a fallback,
+the reason in plain language, and the ordered alternatives that were ready at
+decision time — so the interface can say *what actually happened* rather than
+implying the primary answered.
 
-To add a new provider:
+> **`core/model_router.py` is not this.** It is a separate scoring abstraction,
+> and on the live path it does one job: choosing *which local Ollama model* to
+> use when the local model is configured as `auto`. It does not choose between
+> Groq, Mistral, Google and Ollama. Earlier versions of this document described
+> that module as if it were the routing decision; it never has been.
 
-1. implement a ModelProvider subclass
-2. register it in the router constructor
-3. expose a list_models() implementation
-4. implement generate or stream as needed
-5. ensure health checks are conservative and auditable
+## The providers
 
-To add a new model:
+| id | Adapter | Role |
+|---|---|---|
+| `groq` | Groq SDK (`core/providers.py`) | Cloud. The measured baseline and the default preference |
+| `mistral` | OpenAI-compatible REST (`core/mistral_provider.py`) | Cloud |
+| `google` | Gemini REST (`core/google_provider.py`) | Cloud |
+| `ollama` | Local HTTP (`127.0.0.1:11434`) | Local, and the terminal fallback |
 
-1. add it to the provider registry or discovery result
-2. populate ModelInfo metadata
-3. let the router score it automatically under task requirements
+Adding a provider means adding an id to `CLOUD_PROVIDER_IDS` and a `describe_*`
+function. Nothing in the Brain changes — which is what adding Mistral
+demonstrated. `Brain._cloud_round` is the only method that knows more than one
+cloud vendor exists; below that line, tool execution, the duplicate-execution
+ledger, the failure taxonomy and the diagnostics are provider-agnostic.
 
-## Ollama live test status
+## The three modes
 
-Live Ollama verification is environment-dependent. If Ollama is installed and available, this can be checked with the provider health discovery step. If it is not installed, the correct state is:
+### CLOUD — the preferred cloud provider, and only that one
 
-Ollama live test: NOT AVAILABLE
+```
+preferred cloud provider
+```
 
-## Limitations
+No cloud substitution, no Ollama fallback. "Use this provider" is an
+instruction; quietly answering from a different vendor is the same class of
+surprise as falling back to local without saying so. If the provider cannot
+serve the turn, Nano says so and stops.
 
-- This phase is about a stable router and abstraction layer, not a complete GPU scheduler.
-- Model capability metadata from Ollama is partially inferred when the provider does not expose richer details.
-- The router is intentionally conservative to avoid unjustified model selection.
+One deliberate exception to *not attempting*: a provider in `SETUP_REQUIRED`
+(no credential, or no model chosen) is skipped, because the request cannot
+succeed and the right output is the setup message. Every other unhealthy state
+is still attempted, because the status snapshot behind it can be up to 45
+seconds old and a stale probe must not become a refusal to work.
+
+### AUTO — preferred cloud first, remaining clouds next, Ollama last
+
+```
+preferred cloud provider
+  → the remaining cloud providers, in CLOUD_PROVIDER_IDS order
+      → Ollama (local, terminal)
+```
+
+A hop is dropped from the chain, and the reason recorded, when the provider has
+no credential, no model, no client in this process, or is inside a cooldown from
+a recent rate limit.
+
+### LOCAL — Ollama only
+
+No cloud provider is contacted, **not even for a status probe**: the payloads
+are synthesised locally by `core/provider_status.py`. That is a privacy
+property, not an optimisation, and adding a third cloud provider did not weaken
+it. See [`PRIVACY.md`](../../PRIVACY.md).
+
+## `preferredCloud` is not the fallback order
+
+These are two different settings answering two different questions, and
+conflating them is the mistake this section exists to prevent.
+
+| | What it answers | Where it lives |
+|---|---|---|
+| **`preferredCloud`** | *Who goes first?* | A **user setting**, Definições → IA |
+| **`CLOUD_PROVIDER_IDS`** | *Who follows, in what order?* | A **system tuple**, `core/providers.py` |
+
+The preferred provider is moved to the front of the chain; the rest keep the
+declaration order of `CLOUD_PROVIDER_IDS`. So a user who prefers Google gets
+Google first and then `groq, mistral` behind it — the tuple is not reordered by
+the preference, and the preference is not overridden by the tuple.
+
+Current values:
+
+```
+CLOUD_PROVIDER_IDS      = ("groq", "mistral", "google")
+DEFAULT_CLOUD_PROVIDER  = "groq"        # used when the user expressed no preference
+```
+
+`DEFAULT_CLOUD_PROVIDER` is stated separately rather than derived from
+`CLOUD_PROVIDER_IDS[0]`, so that reordering the fallback chain cannot silently
+move the default. A test asserts the two nevertheless agree.
+
+The rest order is deliberately **stable rather than measured live**. Ordering by
+observed latency would make the same question route differently on two
+consecutive turns for reasons the user cannot see.
+
+## The evidence behind the order
+
+The order is a measurement, not an alphabet — it used to read
+`(google, groq, mistral)`, which is alphabetical and was nobody's decision. The
+run that produced the current tuple is committed at
+[`benchmarks/provider_routing/README.md`](../../benchmarks/provider_routing/README.md),
+and `tests/test_provider_routing_policy.py` fails if the constant and the
+exported results stop agreeing. Changing the order means re-running the
+benchmark and re-exporting it.
+
+In short:
+
+* **Groq first** — two to three times faster on median turn (452 ms against
+  1000 ms for Mistral and 1421 ms for Gemini), measured over 48 of the 53 cases,
+  and the best tool accuracy among the broadly-covered providers: 93.8%, which
+  is 15 of 16 tool cases. A primary answers most turns, so its latency is the
+  one the user lives with. Its real weakness is Portuguese consistency (87.1%).
+* **Mistral second, because of what a fallback is for** — the only cloud
+  provider that completed the whole corpus with no rate-limit event at all, and
+  a fallback is reached precisely when the first choice has just failed. Perfect
+  European Portuguese. Its tool accuracy — 81.2%, or 13 of 16 tool cases — is
+  why it is not first.
+* **Google last, and not for answering badly** — on what it answered it scored
+  best (88.2% pass, no observed security failure). It is last because on this
+  project's credentials it mostly could not be asked: four rate-limit stops
+  across its two models, only 17 of 53 cases measurable for
+  `gemini-2.5-flash`, and a fresh 429 on the first request of three consecutive
+  retry windows spaced 150 s apart. A hop that is usually unavailable spends a
+  round trip and a cooldown to achieve nothing. That is a fact about a free
+  tier on one day, not a claim about Gemini.
+* **Ollama terminal, and not ranked by measurement** — local is last because it
+  is the privacy fallback and the only provider that costs the user's own RAM.
+
+The caveats travel with the numbers and are not optional: **one account, one
+day, one run per case.** Google is under-measured, so its quality is unranked.
+On task quality Groq and Mistral are statistically indistinguishable at this
+corpus's resolution — the ranking between them flips depending on a weight
+somebody chose — and the order rests on latency and availability, which are the
+differences that are large and repeatable. None of this is a claim that any
+vendor is objectively better than another.
+
+Nothing in the runtime reads a benchmark figure. Rate limiting is handled by
+reacting to a real 429 and its `Retry-After`, never by a quota number copied
+from a dashboard.
+
+## Model selection
+
+Each provider payload carries a `fast` and a `complex` tier, and the task
+classifier (`core/model_selection.py`) picks which tier a turn needs.
+`cloud_model_for(payload, tier)` resolves the concrete id.
+
+**Concrete model ids are discovered from the account, never pinned blindly.**
+Pinning a literal id is what once left the project calling a decommissioned
+model and 404-ing on every message, so `cloud_model_choices` validates a choice
+against the account that will serve it.
+
+**Default adoption.** When an account is credentialed but no model has been
+chosen, `core/model_defaults.py` may adopt one from the account's own catalogue
+— currently the behaviour that matters for Mistral and Google. Every payload
+reports a `model_source` (`configured`, `default`, or `none`) so the interface
+can show whether a model was picked by the user, adopted from the catalogue, or
+is still missing. **A user's own selection is never overridden**: a default
+exists to make a credentialed provider usable, not to be the best possible
+pick. The benchmark makes the point concretely — `gemini-2.5-flash-lite`, which
+the resolver would adopt for an unconfigured Google account, scored well below
+the configured `gemini-2.5-flash` on tool accuracy.
+
+## Status snapshots and cooldowns
+
+Describing a provider costs a synchronous HTTPS round trip with a 10-second
+timeout. `core/provider_status.py` holds **one snapshot**, keyed by mode, model
+and preference, shared by the Brain and the Settings page, refreshed off-thread,
+with a 45-second TTL. The cloud probes run concurrently, so a cold snapshot with
+three providers costs one timeout rather than the sum of three.
+
+Rate limits are read from the response: `parse_rate_limit` interprets the
+provider's headers and `Retry-After`, and `core/provider_failures.py` holds a
+per-provider cooldown. In AUTO a cooling-down provider is dropped from the
+chain, because asking a provider we know is rate-limited costs latency, fails,
+and spends a budget that has not come back yet. In CLOUD it is still attempted —
+the user asked for that provider specifically.
+
+## Attribution: what the user is told
+
+A single "provider: groq (fallback)" is a true statement that answers the wrong
+question. If the user selected Gemini, the fact they need is *"Gemini was asked,
+it returned a service error, Groq finished the turn."*
+
+So `Brain.last_metadata` carries `provider_attempts` — every hop this turn made,
+in order, each with its model and its outcome — alongside `provider`/`model`
+(who finished), `fallback_used`, `cloud_skipped` (who was dropped and why, with
+the remaining cooldown in seconds), `tier`, `task` and the memory accounting.
+`core/response_meta.py` decides what survives to the interface.
+
+`tier` is set on every branch. It was once dropped on both AUTO branches, so the
+diagnostics panel read `None` for it exactly when Nano had fallen back — the
+case the panel most needs to explain.
+
+## The Execution Ledger: failover must not repeat an effect
+
+A turn may cross providers. The one thing failover must never do is repeat a
+real effect on the machine — open a second Calculator, close a second window,
+move the volume twice.
+
+`Brain._turn_tool_results` is a per-turn ledger keyed on `(tool name, canonical
+arguments)`. The first execution of a call is remembered; an identical repeat
+from a later provider is served the recorded result instead of touching Windows
+again. The model still sees a truthful answer; the machine is acted on once.
+The ledger is per turn, so a genuine second request in a later turn is
+unaffected.
+
+Two details carry the weight:
+
+* **Identity is the *effective* call, not the JSON.** The registered schema is
+  applied first, and its output is both what is fingerprinted and what the
+  executor runs, so `{"delta": 10}`, `{"delta": 10.0}` and `{"delta": "10"}`
+  cannot become three ledger entries for one effect. Paths are normalised for
+  case and separators; enum arguments are case-folded.
+* **In-flight calls are covered too.** A model can emit the identical tool call
+  twice in one response, and both copies would pass a finished-only ledger
+  before either wrote to it. A call is therefore entered as *in flight* before
+  it is awaited, and an identical arrival waits for it rather than starting a
+  second. The in-flight entry is removed whatever the outcome, so a refusal
+  stays retryable; only a success is written to the durable ledger.
+
+This protects against a provider **re-issuing a call it can see in the
+history**. It is a per-turn deduplication of identical calls, not a general
+transactional guarantee: a model that asks for a genuinely different action gets
+a genuinely different action, which is the correct behaviour.
+
+## Extending it
+
+To add a cloud provider:
+
+1. add its id to `ProviderId` and to `CLOUD_PROVIDER_IDS` (position is an
+   evidence decision — see the benchmark);
+2. add a `describe_<provider>` returning the standard payload shape;
+3. register it in `_CLOUD_DESCRIBER_NAMES` / `_CLOUD_TESTER_NAMES`;
+4. add an adapter that fills the shared collector in `Brain._cloud_round`;
+5. add its secret slot to `core/secret_store.py`.
+
+The router, the cooldown registry, the settings surface and the diagnostics all
+key on the same id and need no further change.

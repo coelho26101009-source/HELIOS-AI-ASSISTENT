@@ -293,8 +293,20 @@ self-positioning application that ignores the move is reported as
 `state_unchanged`, not narrated as success.
 
 `window.close` posts `WM_CLOSE`, the same message the X button sends, and
-refuses a loose title match (`allow_partial=False`). **There is no process
-termination anywhere in PC Control**; a test walks the AST of every module to
+refuses a loose title match (`allow_partial=False`). An application that
+declines to close is reported as having declined: "I asked and it stayed open"
+is an honest answer and "closed" would not be.
+
+Whether it closed is decided on the window's **identity**, not on its handle.
+Windows recycles handles, so a freshly created window can land on the very
+integer that was just closed and `IsWindow` would call it alive. The owning
+process id is therefore captured before the close is requested and re-checked on
+every poll: a live handle owned by a different process is not the window we
+asked to close, and that counts as closed. If the owner PID cannot be read at
+some poll, that poll falls back to trusting `IsWindow` rather than comparing
+against a zero — one flaky read must not be reported as a successful close.
+
+**There is no process termination anywhere in PC Control**; a test walks the AST of every module to
 prove no `terminate`/`kill`/`unlink`/`rmtree` call exists, with exactly one
 audited exception (`screen.cleanup`, which deletes Nano's own expired captures
 and is proved to enumerate nothing else).
@@ -547,9 +559,16 @@ strings, case-fold the enum arguments, `normcase`/`normpath` the path
 arguments, drop explicit nulls. Deliberately shallow: it must never merge two
 calls that would do different things.
 
-Tested across a simulated Groq 429 → Ollama failover for window snap, window
-move, typing, file move, file recycle, clipboard write, screenshot, window close
-and shutdown.
+Since then the ledger has been keyed on the **effective** call — the arguments
+after the registered schema has been applied, which is also the object handed to
+the executor — so one integer serialised three ways cannot become three ledger
+identities for one effect. Calls still in flight are entered before they are
+awaited, which closes the separate hole of a model emitting the same call twice
+in one response. See [MODEL_ROUTING.md](MODEL_ROUTING.md).
+
+Tested across a simulated cloud 429 failover — originally Groq → Ollama, and now
+cloud → cloud as well — for window snap, window move, typing, file move, file
+recycle, clipboard write, screenshot, window close and shutdown.
 
 ### The handoff itself was broken, and the fake was hiding it
 
@@ -617,8 +636,9 @@ to *ask* about it.
 
 ## Tool scoping
 
-56 PC tools is roughly 4500 prompt tokens, against a Groq tier that allows 8000
-per minute. `core/model_selection.py` therefore sends the smallest plausible
+56 PC tools is roughly 4500 prompt tokens, against the free Groq tier that
+allows 8000 per minute — the tightest budget of the providers Nano routes to,
+and therefore the one the scoping is sized for. `core/model_selection.py` therefore sends the smallest plausible
 subset: `PC`, `PC_APPS`, `PC_WINDOWS`, `PC_AUDIO`, `PC_DISPLAY`, `PC_INPUT`,
 `PC_POWER`, `PC_SCREEN`, `FILES`, `BROWSER`. A message matching several
 categories gets the union, which is how "abre a calculadora e mete-a à direita"

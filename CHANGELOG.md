@@ -24,6 +24,137 @@ See [docs/RELEASING.md](docs/RELEASING.md).
 
 ## [Unreleased]
 
+### Documentation truth pass — 2026-09-09
+
+- Audited every public document against the code and corrected what had gone
+  stale. `PRIVACY.md`, `README.md` and `docs/architecture/MODEL_ROUTING.md` were
+  rewritten; `SECURITY.md`, `docs/SECURITY_POLICY.md`,
+  `docs/architecture/ARCHITECTURE.md`, `docs/VOICE.md`, `docs/README.md`,
+  `docs/architecture/PC_CONTROL.md` and `docs/PUBLIC_RELEASE_CHECKLIST.md` were
+  corrected in place.
+- The material corrections: provider documentation described Groq as the only
+  cloud provider, and Mistral and Gemini appeared in no user-facing document at
+  all; AUTO and CLOUD mode semantics were wrong; conversations were described as
+  read-only; Memory/RAG was listed as roadmap and the Second Brain was
+  undocumented; `edge-tts` was described as a *local* TTS provider when it sends
+  the spoken text to Microsoft; a "cloud audio fallback" was documented that has
+  no implementation; the count of eel-exposed functions was stale; and
+  `MODEL_ROUTING.md` described `core/model_router.py` as if it decided the
+  provider, which it never has.
+- `PRIVACY.md` now states two things it previously got wrong: that a cloud
+  provider tried and failed during AUTO failover **has already received the
+  request**, and that approved tool results — clipboard text, file contents,
+  extracted web pages — are sent to the provider so the model can continue.
+  Screenshots remain the genuine exception: the tool returns a path and a size,
+  never pixels.
+- Documentation only; no production, frontend or test source changed.
+
+### Provider routing evidence and AUTO order — 2026-09-09
+
+- Replaced the cloud fallback order with a **measured** one. It had been
+  `(google, groq, mistral)`, which is alphabetical and was nobody's decision;
+  it is now `groq → mistral → google`, then Ollama as the terminal local hop.
+- Committed the benchmark that decided it to `benchmarks/provider_routing/` —
+  a 53-case synthetic corpus, per-case verdicts and latencies, the scoring
+  weights stated before the numbers were read, and the caveats: one account,
+  one day, one run per case, and Google under-measured by rate limits. The
+  artifact deliberately makes no claim that any vendor is objectively better.
+  A test fails if the constant and the exported results stop agreeing.
+- Clarified throughout that `preferredCloud` (a user setting, always the first
+  hop) and `CLOUD_PROVIDER_IDS` (the system order for everyone after it) answer
+  different questions. `DEFAULT_CLOUD_PROVIDER` stays `groq`; this run
+  reaffirmed it rather than changing it.
+- Model defaults may now be adopted from an account's own catalogue for Google
+  and Mistral, reported through a `model_source` field, and never override a
+  model the user chose.
+
+### Windows close lifecycle — 2026-09-09
+
+- `window.close` now verifies the outcome against the window's **identity** —
+  handle plus owning process id — rather than the handle alone, because Windows
+  recycles handles and a new window can land on the same integer.
+- A poll where the owner PID cannot be read falls back to trusting `IsWindow`
+  for that poll instead of comparing against a zero and reading as a mismatch,
+  which had reported a window closed after one flaky read.
+
+### Memory extraction V2 — 2026-09-08
+
+- Inferred facts are now **scored** rather than all being parked as inert
+  candidates: a high-confidence inference becomes an active memory, a weaker one
+  stays a candidate, and a weaker one still is discarded. Extraction remains
+  deterministic and local — never a model call, because a classifier deciding
+  what to remember would be a second, unauditable authority over the store.
+- Separated durable facts from passing reminders, so a reminder no longer
+  becomes something Nano believes about you permanently.
+
+### Execution Ledger hardening — 2026-09-08
+
+- The per-turn duplicate-execution ledger is now keyed on the **effective** call
+  — the arguments after the registered schema has been applied — and that same
+  normalised object is what the executor runs. Previously the same integer
+  serialised three ways was three ledger identities for one effect, so a
+  mid-turn provider failover could move the volume twice.
+- Paths are normalised for case and separator, and enum arguments case-folded,
+  so two spellings of one file or one direction are one entry.
+- Identical calls **in flight** are covered too: a call is recorded before it is
+  awaited, so a model emitting the same tool call twice in one response no
+  longer executes it twice. Only a success is recorded durably, so a refusal
+  stays retryable within the turn.
+
+### Test reliability and real Chromium CI — 2026-09-07
+
+- The Chromium UI tests now **actually run in CI**. Every module looked for
+  `electron.exe`, a filename that cannot exist on Linux, so on CI they skipped
+  and the skip read as a pass. The `chromium-ui` job now loads the production
+  bundle into Electron's own Chromium under `xvfb` and runs all 57 of them.
+- Fixed two harness races around CSS transitions that made graph rendering
+  assertions flaky.
+
+### Conversation continuity — 2026-09-06
+
+- **Each turn stays bound to the conversation it was written in.** A message now
+  belongs to the thread that was active when it was sent, not to whichever
+  thread happens to be open when the answer arrives.
+- Added bulk conversation deletion as one narrow, confirmed operation taking a
+  list of thread ids — not a generic "delete where" reachable from the renderer.
+  The confirmation names the count and the message total.
+
+### Multi-provider support — 2026-09-04
+
+- Added **Google (Gemini)** and **Mistral** alongside Groq, each with its own
+  adapter, its own credential slot and its own model discovery. One key can
+  never satisfy or overwrite another provider's slot.
+- Surfaced all of it in the interface: per-provider keys, per-provider model
+  selection, and a preferred-cloud setting.
+- Routing became genuinely multi-provider: AUTO now walks the preferred cloud,
+  then the remaining ready clouds, then Ollama, and reports **every hop it
+  made** with what happened to each — so "you chose Gemini, it rate-limited,
+  Groq finished the turn" is expressible rather than being flattened into
+  "groq (fallback)".
+- Hardened security grading and permission grounding alongside it.
+
+### Conversation threads, memory and the Second Brain — 2026-08-31 → 2026-09-05
+
+- **Conversation threads.** Real threads in SQLite, with creation, switching,
+  renaming, archiving and deletion. Opening an older conversation rebuilds the
+  model's context from that thread's messages and summary, which is what makes
+  an old conversation writable instead of a read-only transcript.
+- **Long-term memory** across threads, with retrieval, and a single context
+  composer that decides what the model is told about the past — recent turns,
+  the thread summary, relevant older messages, relevant memories — under a
+  per-section token budget with deduplication, so CLOUD, AUTO and LOCAL receive
+  logically identical context.
+- **Second Brain**: nodes for the entities memories are about, and edges between
+  nodes that co-occur in a memory. Nodes come only from active memories or
+  explicit user action, never from raw message text. Implemented and tested; in
+  practice still sparse, which is what a graph looks like before prolonged real
+  use.
+- One database, migrated in place under `PRAGMA user_version` and never
+  replaced; existing messages were back-filled into real threads rather than
+  discarded.
+- Replaced trust-boundary tests that asserted on source layout with tests that
+  exercise the behaviour.
+
 ### Public release foundation — 2026-08-30
 
 **Security**

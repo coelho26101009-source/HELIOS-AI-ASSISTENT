@@ -12,6 +12,21 @@ Never:
 
 MODEL -> EXECUTION
 
+As implemented in `core/tool_execution.py`, the full chain is:
+
+capability resolution -> argument validation (registered schema)
+-> scope classification / target resolution -> PolicyEngine
+-> PermissionManager -> execution -> verification -> audit
+
+Argument validation runs BEFORE the policy decides. This is not a detail: it is
+what guarantees the arguments the policy reasoned about are the arguments the
+handler receives. The five-step form above is the shorthand for this chain, not
+a different one.
+
+Plugin handlers are never invoked directly. `core/plugin_loader.py` refuses to
+run a handler unless the caller presents the ToolExecutor as its execution
+authority, so bypassing the pipeline fails closed rather than silently working.
+
 ## Decision model
 
 The Nano uses three authority levels:
@@ -35,7 +50,8 @@ The final decision is based on:
 
 - LOW: read-only, non-sensitive, low-impact operations.
 - MEDIUM: project- or task-scoped changes with moderate impact.
-- HIGH: shell, external actions, or commands with relevant system impact.
+- HIGH: external actions, or narrow tools with relevant system impact.
+  (Nano has no shell tool; see "No generic execution primitive" below.)
 - CRITICAL: destructive, sensitive, irreversible, credential, or financial actions.
 
 ## Safe autonomous actions
@@ -68,10 +84,8 @@ The following are APPROVAL_REQUIRED:
 - delete files
 - move important files
 - write outside the workspace
-- run shell commands with relevant effects
-- install software
 - change settings
-- start unknown processes
+- launch an application from the installed-application catalogue
 - modify repo in a relevant way
 - push
 - publish content
@@ -134,8 +148,8 @@ The same capability may yield different decisions depending on the context. Exam
 
 - write file inside workspace -> AUTONOMOUS
 - write file outside workspace -> APPROVAL_REQUIRED
-- run test command inside project -> AUTONOMOUS
-- run arbitrary shell outside project -> APPROVAL_REQUIRED
+- read a window title -> AUTONOMOUS
+- close a named window -> APPROVAL_REQUIRED
 
 ## Target validation
 
@@ -203,16 +217,21 @@ No secrets are stored in audit logs.
 
 ## Policy engine authority
 
-The Policy Engine is the single authority. Every component must depend on it:
+The Policy Engine is the single authority. Every component must depend on it.
 
+Components that exist today and do:
+
+- Tool Executor (the only path to a handler)
+- PC Control tools
+- Filesystem operations
+- Browser / web tools
 - Desktop Agent
-- Browser Agent
-- Coding Agent
-- Research Agent
-- Tool Executor
-- Shell
-- Filesystem
-- Future integrations
+- Background worker and Task Engine
+
+Named here as a standing rule for anything added later, not as a claim that it
+exists: a Coding Agent, a Research Agent, and any external-service integration
+would be bound by the same authority. `Shell` was listed here historically and
+has been removed — there is no shell component to govern.
 
 No plugin may create its own security rule that bypasses the Policy Engine.
 
@@ -225,19 +244,37 @@ For unknown capabilities:
 
 This rule prevents accidental autonomous behavior for actions not confidently classified.
 
+## Network targets and SSRF
+
+Every URL a tool may reach is validated by
+`core.browser_agent.validate_public_http_url` before a request is made. It:
+
+- accepts only `http` and `https` — `file://` and every other scheme is refused;
+- refuses embedded credentials in the URL;
+- **resolves the hostname and checks every resolved address**, rejecting
+  loopback, private, link-local and other non-public ranges, so a public name
+  that resolves inward does not become a way to reach the local network.
+
+This applies to the web tools and to the browser automation plugin alike.
+
 ## Future integration readiness
 
 The model is ready for integration capability declarations such as:
 
 - GitHub: read, issue.create, pr.comment, pr.merge
 - Gmail: read, send
-- Calendar: read, create, delete
 - Discord: read, send
 - WhatsApp: read, send
 - Spotify: read, play
 - Home Assistant: read, control
 
-These are architectural declarations only; no integration is implemented by default in this phase.
+**These are architectural declarations only. None of them is implemented.**
+
+The one partial exception is the calendar, which is why it is no longer listed
+above: `plugins/calendar.py` implements a **local** SQLite calendar with
+optional `.ics` import, plus optional read-only Google Calendar access that
+requires the user to install extra dependencies and supply their own OAuth
+credentials. Nothing else on the list exists in any form.
 
 ## Agent authority
 
@@ -312,6 +349,64 @@ The state must be visible in the backend and UI.
 ## Recovery and approval interruption
 
 If a task is interrupted while awaiting approval, the system must preserve the state and recover correctly when safe. If continuing would be unsafe, the task transitions to NEEDS_ATTENTION and does not auto-execute the action.
+
+## No generic execution primitive
+
+The policy above would be worth little if the model could reach a shell, so the
+absence of one is enforced rather than assumed.
+
+- There is **no** PowerShell, CMD, shell or script-execution tool reachable by
+  the model. The plugins that once offered one (`god_mode`, `context_switcher`)
+  were withdrawn; their files are kept as the record of why.
+- There is **no** process-termination primitive in PC Control. A test walks the
+  AST of every module and asserts no `terminate`/`kill`/`unlink`/`rmtree` call
+  exists, with one audited exception (`screen.cleanup`, which deletes Nano's own
+  expired captures and is proved to enumerate nothing else).
+- File deletion means the **Recycle Bin**, never permanent removal.
+- Nano refuses to type into a console window: opening a terminal and typing into
+  it would be a shell assembled from two individually harmless actions.
+- A CI job rejects `shell=True`, `os.system`, `os.popen`, `eval` and `exec`
+  anywhere in the tree.
+
+## Window close, and reporting it honestly
+
+`window.close` posts `WM_CLOSE` — the same message the X button sends. An
+application may decline, and one that declines is reported as having declined:
+"I asked and it stayed open" is an honest answer and "closed" would not be.
+
+Whether it actually closed is verified against the window's **identity**, not
+just its handle. Windows recycles handles, so a new window can land on the same
+integer; the owning process id is captured before the close is requested and
+re-checked on every poll. If the owner PID cannot be read at some poll, that
+poll falls back to trusting `IsWindow` rather than treating the window as
+belonging to someone else — a single flaky read must not be reported as a
+successful close.
+
+## Duplicate side effects across a provider failover
+
+A turn may cross providers, and the one thing failover must never do is repeat a
+real effect on the machine.
+
+The **Execution Ledger** is per user turn and keyed on `(tool name, canonical
+arguments)`. Identity is computed on the *effective* call — the arguments after
+the registered schema has been applied, with paths normalised for case and
+separator and enum values case-folded — and that same normalised object is what
+the executor runs, so identity and effect cannot drift. A repeat of a call that
+already finished is served the recorded result instead of touching the operating
+system again.
+
+Calls still **in flight** are covered by the same ledger: a call is entered
+before it is awaited, so an identical call arriving in the same round waits for
+the first rather than starting a second. This closes a hole that had nothing to
+do with failover — a model emitting the same tool call twice in one response.
+The in-flight entry is removed whatever the outcome, so a refusal stays
+retryable; only a success is recorded durably.
+
+**What this does not claim.** It is per-turn deduplication of identical calls,
+not a transaction and not a general idempotence guarantee. Nano does not
+intentionally replay an equivalent side effect during failover, and the ledger
+is the mechanism that prevents the known replay path; it is not a proof that no
+sequence of distinct calls can produce a duplicated effect.
 
 ## Security testing expectations
 
